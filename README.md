@@ -1,10 +1,10 @@
-!CI
-!CodeQL
-!GitHub Issues
-!Total Commits
-!GitHub commit activity
-!License
-!Contributions welcome
+[![CI](https://github.com/ltpitt/python-playwright-social-schools-automaton/workflows/CI/badge.svg)](https://github.com/ltpitt/python-playwright-social-schools-automaton/actions)
+[![CodeQL](https://github.com/ltpitt/python-playwright-social-schools-automaton/workflows/CodeQL/badge.svg)](https://github.com/ltpitt/python-playwright-social-schools-automaton/actions?query=workflow%3ACodeQL)
+[![GitHub Issues](https://img.shields.io/github/issues-raw/ltpitt/python-playwright-social-schools-automaton)](https://github.com/ltpitt/python-playwright-social-schools-automaton/issues)
+[![Total Commits](https://img.shields.io/github/last-commit/ltpitt/python-playwright-social-schools-automaton)](https://github.com/ltpitt/python-playwright-social-schools-automaton/commits)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/4w/ltpitt/python-playwright-social-schools-automaton?foo=bar)](https://github.com/ltpitt/python-playwright-social-schools-automaton/commits)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltpitt/python-playwright-social-schools-automaton/blob/master/LICENSE)
+![Contributions welcome](https://img.shields.io/badge/contributions-welcome-orange.svg)
 
 # Social Schools Automaton
 > A Python script to automate downloading, translating, and notifying about new PDFs from the social school website!

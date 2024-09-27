@@ -53,7 +53,7 @@ I got tired of the daily grind of logging into the school website, hunting for n
 
 ## Meta
 
-Your Name – [d.nastri@gmail.com](mailto:d.nastri@gmail.com)
+Davide Nastri – [d.nastri@gmail.com](mailto:d.nastri@gmail.com)
 
 Distributed under the MIT license. See ``LICENSE`` for more information.
 

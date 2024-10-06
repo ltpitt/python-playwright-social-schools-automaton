@@ -1,0 +1,5 @@
+pycurl==7.45.2
+playwright==1.37.0
+pymupdf==1.22.5
+deep-translator==1.10.1
+pushbullet==0.11.0

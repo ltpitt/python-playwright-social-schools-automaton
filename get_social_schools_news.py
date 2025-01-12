@@ -13,7 +13,8 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 import fitz  # PyMuPDF
 from deep_translator import GoogleTranslator
-from pushbullet import Pushbullet
+import requests
+import json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,8 +59,11 @@ def translate_text(text, src="nl", dest=TRANSLATION_LANGUAGE, chunk_size=4900):
 
 def send_pushbullet_notification(title, body, api_key):
     logger.info(f"Sending Pushbullet notification with title: {title}")
-    pb = Pushbullet(api_key)
-    pb.push_note(title, body)
+    params = {'type': 'note', 'title': title, 'body': body}
+    response = requests.post('https://api.pushbullet.com/v2/pushes', data=json.dumps(params),
+                             headers={'Authorization': 'Bearer ' + api_key,
+                                      'Content-Type': 'application/json'})
+    logger.info(response)
     logger.info("Pushbullet notification sent")
 
 

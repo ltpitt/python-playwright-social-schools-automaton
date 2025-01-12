@@ -2,6 +2,5 @@ pycurl==7.45.4
 playwright==1.49.1
 pymupdf==1.25.1
 deep-translator==1.11.4
-pushbullet-python==1.7.0
 flake8==7.1.1
 pytest==8.3.4

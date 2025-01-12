@@ -11,7 +11,7 @@ from get_social_schools_news import (
 
 class TestGetSocialSchoolsNews(unittest.TestCase):
 
-    @patch("get-social-schools-news.pycurl.Curl")
+    @patch("get_social_schools_news.pycurl.Curl")
     def test_download_pdf_with_pycurl(self, MockCurl):
         mock_curl_instance = MockCurl.return_value
         mock_curl_instance.perform.return_value = None
@@ -23,7 +23,7 @@ class TestGetSocialSchoolsNews(unittest.TestCase):
             mocked_file.assert_called_once_with("test.pdf", "wb")
             mocked_file().write.assert_called_once_with(b"PDF content")
 
-    @patch("get-social-schools-news.fitz.open")
+    @patch("get_social_schools_news.fitz.open")
     def test_extract_text_from_pdf(self, mock_fitz_open):
         mock_doc = MagicMock()
         mock_page = MagicMock()
@@ -34,14 +34,14 @@ class TestGetSocialSchoolsNews(unittest.TestCase):
         text = extract_text_from_pdf("test.pdf")
         self.assertEqual(text, "Page text")
 
-    @patch("get-social-schools-news.GoogleTranslator.translate")
+    @patch("get_social_schools_news.GoogleTranslator.translate")
     def test_translate_text(self, mock_translate):
         mock_translate.side_effect = lambda text: f"Translated {text}"
         text = "This is a test."
         translated_text = translate_text(text, src="en", dest="it")
         self.assertEqual(translated_text, "Translated This is a test.")
 
-    @patch("get-social-schools-news.Pushbullet")
+    @patch("get_social_schools_news.Pushbullet")
     def test_send_pushbullet_notification(self, MockPushbullet):
         mock_pb_instance = MockPushbullet.return_value
         send_pushbullet_notification("Test Title", "Test Body", "fake_api_key")

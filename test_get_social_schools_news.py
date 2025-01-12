@@ -1,12 +1,8 @@
 import unittest
 from unittest.mock import patch, mock_open, MagicMock
 from io import BytesIO
-from get_social_schools_news import (
-    download_pdf_with_pycurl,
-    extract_text_from_pdf,
-    translate_text,
-    send_pushbullet_notification,
-)
+from get_social_schools_news import download_pdf_with_pycurl, extract_text_from_pdf, translate_text, \
+    send_pushbullet_notification
 
 
 class TestGetSocialSchoolsNews(unittest.TestCase):
@@ -14,11 +10,13 @@ class TestGetSocialSchoolsNews(unittest.TestCase):
     @patch("get_social_schools_news.pycurl.Curl")
     def test_download_pdf_with_pycurl(self, MockCurl):
         mock_curl_instance = MockCurl.return_value
-        mock_curl_instance.setopt.side_effect = lambda option, value: (
-            setattr(mock_curl_instance, "WRITEDATA", BytesIO(b"PDF content"))
-            if option == mock_curl_instance.WRITEDATA
-            else None
-        )
+        buffer = BytesIO()
+
+        def mock_setopt(option, value):
+            if option == mock_curl_instance.WRITEDATA:
+                buffer.write(b"PDF content")
+
+        mock_curl_instance.setopt.side_effect = mock_setopt
 
         with patch("builtins.open", mock_open()) as mocked_file:
             download_pdf_with_pycurl("http://example.com/test.pdf", "test.pdf")
@@ -39,8 +37,8 @@ class TestGetSocialSchoolsNews(unittest.TestCase):
     @patch("get_social_schools_news.GoogleTranslator.translate")
     def test_translate_text(self, mock_translate):
         mock_translate.side_effect = lambda text: f"Translated {text}"
-        text = "This is a test."
-        translated_text = translate_text(text, src="en", dest="it")
+        test_text = "This is a test."
+        translated_text = translate_text(test_text, src="en", dest="it")
         self.assertEqual(translated_text, "Translated This is a test.")
 
     @patch("get_social_schools_news.requests.post")
@@ -51,12 +49,9 @@ class TestGetSocialSchoolsNews(unittest.TestCase):
 
         send_pushbullet_notification("Test Title", "Test Body", "fake_api_key")
         MockPost.assert_called_once_with(
-            "https://api.pushbullet.com/v2/pushes",
+            'https://api.pushbullet.com/v2/pushes',
             data=unittest.mock.ANY,
-            headers={
-                "Authorization": "Bearer fake_api_key",
-                "Content-Type": "application/json",
-            },
+            headers={'Authorization': 'Bearer fake_api_key', 'Content-Type': 'application/json'}
         )
 
 

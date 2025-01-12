@@ -59,10 +59,15 @@ def translate_text(text, src="nl", dest=TRANSLATION_LANGUAGE, chunk_size=4900):
 
 def send_pushbullet_notification(title, body, api_key):
     logger.info(f"Sending Pushbullet notification with title: {title}")
-    params = {'type': 'note', 'title': title, 'body': body}
-    response = requests.post('https://api.pushbullet.com/v2/pushes', data=json.dumps(params),
-                             headers={'Authorization': 'Bearer ' + api_key,
-                                      'Content-Type': 'application/json'})
+    params = {"type": "note", "title": title, "body": body}
+    response = requests.post(
+        "https://api.pushbullet.com/v2/pushes",
+        data=json.dumps(params),
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        },
+    )
     logger.info(response)
     logger.info("Pushbullet notification sent")
 

@@ -1,22 +1,18 @@
 import unittest
 from unittest.mock import patch, mock_open, MagicMock
-import os
 from io import BytesIO
-from get_social_schools_news import (
-    download_pdf_with_pycurl,
-    extract_text_from_pdf,
-    translate_text,
-    send_pushbullet_notification,
-)
+from get_social_schools_news import download_pdf_with_pycurl, extract_text_from_pdf, translate_text, \
+    send_pushbullet_notification
+
 
 class TestGetSocialSchoolsNews(unittest.TestCase):
 
     @patch("get_social_schools_news.pycurl.Curl")
     def test_download_pdf_with_pycurl(self, MockCurl):
         mock_curl_instance = MockCurl.return_value
-        mock_curl_instance.perform.return_value = None
-        buffer = BytesIO(b"PDF content")
-        mock_curl_instance.WRITEDATA = buffer
+        buffer = BytesIO()
+        mock_curl_instance.setopt.side_effect = lambda option, value: buffer.write(
+            b"PDF content") if option == mock_curl_instance.WRITEDATA else None
 
         with patch("builtins.open", mock_open()) as mocked_file:
             download_pdf_with_pycurl("http://example.com/test.pdf", "test.pdf")
@@ -41,11 +37,19 @@ class TestGetSocialSchoolsNews(unittest.TestCase):
         translated_text = translate_text(text, src="en", dest="it")
         self.assertEqual(translated_text, "Translated This is a test.")
 
-    @patch("get_social_schools_news.Pushbullet")
-    def test_send_pushbullet_notification(self, MockPushbullet):
-        mock_pb_instance = MockPushbullet.return_value
+    @patch("get_social_schools_news.requests.post")
+    def test_send_pushbullet_notification(self, MockPost):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        MockPost.return_value = mock_response
+
         send_pushbullet_notification("Test Title", "Test Body", "fake_api_key")
-        mock_pb_instance.push_note.assert_called_once_with("Test Title", "Test Body")
+        MockPost.assert_called_once_with(
+            'https://api.pushbullet.com/v2/pushes',
+            data=unittest.mock.ANY,
+            headers={'Authorization': 'Bearer fake_api_key', 'Content-Type': 'application/json'}
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

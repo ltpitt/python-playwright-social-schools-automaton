@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, mock_open, MagicMock
 import os
 from io import BytesIO
-from get-social-schools-news import (
+from get_social_schools_news import (
     download_pdf_with_pycurl,
     extract_text_from_pdf,
     translate_text,

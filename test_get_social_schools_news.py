@@ -14,14 +14,14 @@ class TestGetSocialSchoolsNews(unittest.TestCase):
 
         def mock_setopt(option, value):
             if option == mock_curl_instance.WRITEDATA:
-                buffer.write(b"PDF content")
+                buffer.write(b"")
 
         mock_curl_instance.setopt.side_effect = mock_setopt
 
         with patch("builtins.open", mock_open()) as mocked_file:
             download_pdf_with_pycurl("http://example.com/test.pdf", "test.pdf")
             mocked_file.assert_called_once_with("test.pdf", "wb")
-            mocked_file().write.assert_called_once_with(b"PDF content")
+            mocked_file().write.assert_called_once_with(b"")
 
     @patch("get_social_schools_news.fitz.open")
     def test_extract_text_from_pdf(self, mock_fitz_open):

@@ -110,7 +110,7 @@ def process_pdf_links(playwright, browser, context, pdf_links, folder_path):
 
 def run(playwright):
     logger.info("Launching browser")
-    browser = playwright.chromium.launch(headless=False)
+    browser = playwright.chromium.launch(headless=True)
     context = browser.new_context()
     page = context.new_page()
 

@@ -191,6 +191,3 @@ def process_article_content(playwright, browser, context, article, folder_path):
 
 with sync_playwright() as playwright:
     run(playwright)
-
-with sync_playwright() as playwright:
-    run(playwright)

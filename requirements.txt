@@ -1,4 +1,4 @@
-pycurl==7.45.4
+pycurl==7.45.6
 playwright==1.50.0
 pymupdf==1.25.3
 deep-translator==1.11.4

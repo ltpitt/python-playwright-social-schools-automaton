@@ -238,7 +238,6 @@ def process_first_article(playwright, browser, context, page):
             raise Exception("Feed element not found")
         logger.debug("Feed element found")
         logger.debug("Looking for first article")
-        input("Press Enter to continue after checking the article...")
         first_article = feed.query_selector("div[role='article']")
         # The following code can be used to get a specific article for debugging purposes
         # all_articles = feed.query_selector_all("div[role='article']")
@@ -269,7 +268,6 @@ def process_first_article(playwright, browser, context, page):
         logger.info(f"Processing new article: {article_id}")
 
         expand_full_text(first_article)
-        input("Press Enter to continue after checking the expanded text...")
         
         process_article_content(playwright, browser, context, first_article)
         

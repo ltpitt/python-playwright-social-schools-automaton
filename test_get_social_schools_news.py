@@ -1,5 +1,12 @@
 import pytest
+import os
+import sys
 from unittest.mock import Mock, patch
+
+# Add config.example.py to Python path for testing
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+os.environ['CONFIG_FILE'] = 'config.example.py'
+
 from get_social_schools_news import (
     load_processed_articles,
     save_processed_article,

@@ -10,10 +10,29 @@ import requests
 from deep_translator import GoogleTranslator
 import json
 from docx import Document
+from dataclasses import dataclass
+from typing import Optional
 
-# Use config file from environment or default to config.py
-config_file = os.getenv('CONFIG_FILE', 'config.py')
-exec(open(config_file).read())
+@dataclass
+class Config:
+    SCRAPED_WEBSITE_USER: str
+    SCRAPED_WEBSITE_PASSWORD: str
+    PUSHBULLET_API_KEY: str
+    TRANSLATION_LANGUAGE: str = "en"
+
+def load_config() -> Config:
+    config_file = os.getenv('CONFIG_FILE', 'config.py')
+    config_dict = {}
+    with open(config_file, 'r') as f:
+        exec(f.read(), {}, config_dict)
+    return Config(
+        SCRAPED_WEBSITE_USER=config_dict['SCRAPED_WEBSITE_USER'],
+        SCRAPED_WEBSITE_PASSWORD=config_dict['SCRAPED_WEBSITE_PASSWORD'],
+        PUSHBULLET_API_KEY=config_dict['PUSHBULLET_API_KEY'],
+        TRANSLATION_LANGUAGE=config_dict.get('TRANSLATION_LANGUAGE', 'en')
+    )
+
+config = load_config()
 
 # Enhanced logging configuration
 logging.basicConfig(
@@ -76,7 +95,7 @@ def extract_text(pdf_path):
     return text
 
 
-def translate(text, src="nl", dest=TRANSLATION_LANGUAGE, chunk_size=4900):
+def translate(text, src="nl", dest=config.TRANSLATION_LANGUAGE, chunk_size=4900):
     logger.info(f"Translating text from {src} to {dest}")
     translator = GoogleTranslator(source=src, target=dest)
     chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
@@ -119,7 +138,7 @@ def process_pdf_links(playwright, browser, context, pdf_links, folder_path):
         send_notification(
             title=f"Original PDF: {txt_filename}",
             body=text,
-            api_key=PUSHBULLET_API_KEY,
+            api_key=config.PUSHBULLET_API_KEY,
         )
 
         translated_text = translate(text)
@@ -132,7 +151,7 @@ def process_pdf_links(playwright, browser, context, pdf_links, folder_path):
         send_notification(
             title=f"Translated PDF: {italian_txt_filename}",
             body=translated_text,
-            api_key=PUSHBULLET_API_KEY,
+            api_key=config.PUSHBULLET_API_KEY,
         )
 
 
@@ -163,7 +182,7 @@ def process_docx_links(playwright, browser, context, docx_links, folder_path):
         send_notification(
             title=f"Original Word Document: {txt_filename}",
             body=text,
-            api_key=PUSHBULLET_API_KEY,
+            api_key=config.PUSHBULLET_API_KEY,
         )
 
         translated_text = translate(text)
@@ -176,7 +195,7 @@ def process_docx_links(playwright, browser, context, docx_links, folder_path):
         send_notification(
             title=f"Translated Word Document: {translated_txt_filename}",
             body=translated_text,
-            api_key=PUSHBULLET_API_KEY,
+            api_key=config.PUSHBULLET_API_KEY,
         )
 
 
@@ -208,12 +227,12 @@ def login_to_website(page):
         username_field = page.locator("#username")
         if not username_field.is_visible():
             raise Exception("Username field not found")
-        page.fill("#username", SCRAPED_WEBSITE_USER)
+        page.fill("#username", config.SCRAPED_WEBSITE_USER)
 
         password_field = page.locator("#Password")
         if not password_field.is_visible():
             raise Exception("Password field not found")
-        page.fill("#Password", SCRAPED_WEBSITE_PASSWORD)
+        page.fill("#Password", config.SCRAPED_WEBSITE_PASSWORD)
 
         page.press("#Password", "Enter")
 
@@ -297,13 +316,13 @@ def process_article_content(playwright, browser, context, article):
     send_notification(
         title=title,
         body=body,
-        api_key=PUSHBULLET_API_KEY,
+        api_key=config.PUSHBULLET_API_KEY,
     )
 
     send_notification(
         title=translate(title),
         body=translate(body),
-        api_key=PUSHBULLET_API_KEY,
+        api_key=config.PUSHBULLET_API_KEY,
     )
 
     pdf_links = article.query_selector_all("a[href*='.pdf']")

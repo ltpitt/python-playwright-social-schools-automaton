@@ -9,13 +9,13 @@
 # Social Schools Automaton
 > A Python script to automate downloading, translating, and notifying about new content from the social school website!
 
-## Why This Exists
+## Why this exists
 
 Hey there, awesome parents! 🎉
 
 I got tired of the daily grind of logging into the school website, hunting for new PDFs and Word documents, downloading them, and then translating them. So, I decided to automate the whole process! Now, we can all sit back, relax, and let this script do the heavy lifting. 🚀
 
-## How It Works
+## How does it work
 
 1. **Logs into the school website** using your credentials.
 2. **Checks for new content** in the feed (both PDFs and Word documents).
@@ -34,7 +34,7 @@ I got tired of the daily grind of logging into the school website, hunting for n
 - Deep Translator (for translations)
 - Pushbullet (for notifications)
 
-## How to Use
+## How to use
 
 1. Clone this repo locally.
 2. Install the required packages:
@@ -61,7 +61,7 @@ I got tired of the daily grind of logging into the school website, hunting for n
     python get_social_schools_news.py
     ```
 
-## Important Notes
+## Important notes
 
 - Keep your `config.py` file safe and never share it with others
 - The script will remember which articles it has already processed

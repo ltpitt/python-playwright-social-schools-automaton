@@ -10,12 +10,10 @@ import requests
 from deep_translator import GoogleTranslator
 import json
 from docx import Document
-from config import (
-    SCRAPED_WEBSITE_USER,
-    SCRAPED_WEBSITE_PASSWORD,
-    PUSHBULLET_API_KEY,
-    TRANSLATION_LANGUAGE
-)
+
+# Use config file from environment or default to config.py
+config_file = os.getenv('CONFIG_FILE', 'config.py')
+exec(open(config_file).read())
 
 # Enhanced logging configuration
 logging.basicConfig(
@@ -184,7 +182,7 @@ def process_docx_links(playwright, browser, context, docx_links, folder_path):
 
 def run(playwright):
     try:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
 
@@ -238,6 +236,7 @@ def process_first_article(playwright, browser, context, page):
             raise Exception("Feed element not found")
         logger.debug("Feed element found")
         logger.debug("Looking for first article")
+        input("Press Enter to continue after checking the article...")
         first_article = feed.query_selector("div[role='article']")
         # The following code can be used to get a specific article for debugging purposes
         # all_articles = feed.query_selector_all("div[role='article']")
@@ -268,6 +267,7 @@ def process_first_article(playwright, browser, context, page):
         logger.info(f"Processing new article: {article_id}")
 
         expand_full_text(first_article)
+        input("Press Enter to continue after checking the expanded text...")
         
         process_article_content(playwright, browser, context, first_article)
         

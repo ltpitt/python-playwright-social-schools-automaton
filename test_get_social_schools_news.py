@@ -1,56 +1,123 @@
-import unittest
-from unittest.mock import patch, mock_open, MagicMock
-from io import BytesIO
-from get_social_schools_news import download_pdf, extract_text, translate, send_notification
+import pytest
+from unittest.mock import Mock, patch
+from get_social_schools_news import (
+    load_processed_articles,
+    save_processed_article,
+    translate,
+    send_notification,
+    process_article_content
+)
 
-class TestGetSocialSchoolsNews(unittest.TestCase):
+@pytest.fixture
+def mock_playwright():
+    playwright = Mock()
+    browser = Mock()
+    context = Mock()
+    page = Mock()
+    
+    playwright.chromium.launch.return_value = browser
+    browser.new_context.return_value = context
+    context.new_page.return_value = page
+    
+    return playwright, browser, context, page
 
-    @patch("get_social_schools_news.pycurl.Curl")
-    def test_download_pdf(self, MockCurl):
-        mock_curl_instance = MockCurl.return_value
-        buffer = BytesIO()
+def test_load_processed_articles(tmp_path):
+    with patch('get_social_schools_news.PROCESSED_ARTICLES_FILE', str(tmp_path / 'processed.json')):
+        # Test empty file
+        assert load_processed_articles() == []
+        
+        # Test with existing articles
+        with open(tmp_path / 'processed.json', 'w') as f:
+            f.write('["article1", "article2"]')
+        assert load_processed_articles() == ["article1", "article2"]
 
-        def mock_setopt(option, value):
-            if option == mock_curl_instance.WRITEDATA:
-                buffer.write(b"")
+def test_save_processed_article(tmp_path):
+    with patch('get_social_schools_news.PROCESSED_ARTICLES_FILE', str(tmp_path / 'processed.json')):
+        # Test new article
+        assert save_processed_article("article1") is True
+        assert load_processed_articles() == ["article1"]
+        
+        # Test duplicate article
+        assert save_processed_article("article1") is False
 
-        mock_curl_instance.setopt.side_effect = mock_setopt
+def test_translate():
+    with patch('deep_translator.GoogleTranslator.translate') as mock_translate:
+        mock_translate.return_value = "Translated text"
+        result = translate("Original text")
+        assert result == "Translated text"
+        mock_translate.assert_called_once()
 
-        with patch("builtins.open", mock_open()) as mocked_file:
-            download_pdf("http://example.com/test.pdf", "test.pdf")
-            mocked_file.assert_called_once_with("test.pdf", "wb")
-            mocked_file().write.assert_called_once_with(b"")
+def test_send_notification():
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.status_code = 200
+        send_notification("Test Title", "Test Body", "test_key")
+        mock_post.assert_called_once()
 
-    @patch("get_social_schools_news.fitz.open")
-    def test_extract_text(self, mock_fitz_open):
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_page.get_text.return_value = "Page text"
-        mock_doc.__iter__.return_value = [mock_page]
-        mock_fitz_open.return_value = mock_doc
+def test_process_article_content(mock_playwright):
+    playwright, browser, context, page = mock_playwright
+    
+    # Mock article with content
+    article = Mock()
+    article.query_selector.return_value.inner_text.return_value = "Test Content"
+    article.query_selector_all.return_value = []
+    
+    with patch('get_social_schools_news.send_notification') as mock_notify, \
+         patch('get_social_schools_news.translate') as mock_translate:
+        mock_translate.return_value = "Translated Content"
+        
+        process_article_content(playwright, browser, context, article)
+        
+        # Verify notifications were sent
+        assert mock_notify.call_count == 2
+        assert mock_translate.call_count == 2
 
-        text = extract_text("test.pdf")
-        self.assertEqual(text, "Page text")
+def test_load_processed_articles_error(tmp_path):
+    with patch('get_social_schools_news.PROCESSED_ARTICLES_FILE', str(tmp_path / 'processed.json')):
+        # Test invalid JSON file
+        with open(tmp_path / 'processed.json', 'w') as f:
+            f.write('invalid json')
+        assert load_processed_articles() == []
 
-    @patch("get_social_schools_news.GoogleTranslator.translate")
-    def test_translate(self, mock_translate):
-        mock_translate.side_effect = lambda text: f"Translated {text}"
-        test_text = "This is a test."
-        translated_text = translate(test_text, src="en", dest="it")
-        self.assertEqual(translated_text, "Translated This is a test.")
+def test_save_processed_article_error(tmp_path):
+    with patch('get_social_schools_news.PROCESSED_ARTICLES_FILE', str(tmp_path / 'processed.json')):
+        # Test file permission error
+        with patch('builtins.open', side_effect=PermissionError):
+            assert save_processed_article("article1") is False
 
-    @patch("get_social_schools_news.requests.post")
-    def test_send_notification(self, MockPost):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        MockPost.return_value = mock_response
+def test_translate_error():
+    with patch('deep_translator.GoogleTranslator.translate', side_effect=Exception("Translation failed")):
+        with pytest.raises(Exception):
+            translate("Original text")
 
-        send_notification("Test Title", "Test Body", "fake_api_key")
-        MockPost.assert_called_once_with(
-            'https://api.pushbullet.com/v2/pushes',
-            data=unittest.mock.ANY,
-            headers={'Authorization': 'Bearer fake_api_key', 'Content-Type': 'application/json'}
-        )
+def test_send_notification_error():
+    with patch('requests.post', side_effect=Exception("Network error")):
+        # Should not raise exception, just log error
+        send_notification("Test Title", "Test Body", "test_key")
 
-if __name__ == "__main__":
-    unittest.main()
+def test_process_article_content_error(mock_playwright):
+    playwright, browser, context, page = mock_playwright
+    
+    # Mock article with missing content
+    article = Mock()
+    article.query_selector.return_value = None
+    
+    with pytest.raises(AttributeError):
+        process_article_content(playwright, browser, context, article)
+
+def test_process_article_content_missing_attachments(mock_playwright):
+    playwright, browser, context, page = mock_playwright
+    
+    # Mock article with content but no attachments
+    article = Mock()
+    article.query_selector.return_value.inner_text.return_value = "Test Content"
+    article.query_selector_all.return_value = []
+    
+    with patch('get_social_schools_news.send_notification') as mock_notify, \
+         patch('get_social_schools_news.translate') as mock_translate:
+        mock_translate.return_value = "Translated Content"
+        
+        process_article_content(playwright, browser, context, article)
+        
+        # Verify only text notifications were sent
+        assert mock_notify.call_count == 2
+        assert mock_translate.call_count == 2 

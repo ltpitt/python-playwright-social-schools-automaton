@@ -39,7 +39,8 @@ logging.basicConfig(
     level=logging.DEBUG,  # Changed to DEBUG for more detailed logging
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("app.log", mode='a', encoding='utf-8'),
+        # Uncomment the following line to save logs to a file
+        # logging.FileHandler("app.log", mode='a', encoding='utf-8'),
         logging.StreamHandler()
     ],
 )

@@ -13,7 +13,8 @@
 
 Hey there, awesome parents! 🎉
 
-I got tired of the daily grind of logging into the school website, hunting for new PDFs and Word documents, downloading them, and then translating them. So, I decided to automate the whole process! Now, we can all sit back, relax, and let this script do the heavy lifting. 🚀
+I got tired of the daily grind of logging into the school website, hunting for new PDFs and Word documents, downloading them, and then translating them. So, I decided to automate the whole process!  
+Now, we can all sit back, relax, and let this script connect to the school website, get the article and its Word or PDF file, do the translation if you want, and send a pushbullet (you'll need this app) notification on your phone. 🚀
 
 ## How does it work
 

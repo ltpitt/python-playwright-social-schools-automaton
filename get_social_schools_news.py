@@ -21,16 +21,15 @@ class Config:
     TRANSLATION_LANGUAGE: str = "en"
 
 def load_config() -> Config:
-    config_file = os.getenv('CONFIG_FILE', 'config.py')
-    config_dict = {}
-    with open(config_file, 'r') as f:
-        exec(f.read(), {}, config_dict)
-    return Config(
-        SCRAPED_WEBSITE_USER=config_dict['SCRAPED_WEBSITE_USER'],
-        SCRAPED_WEBSITE_PASSWORD=config_dict['SCRAPED_WEBSITE_PASSWORD'],
-        PUSHBULLET_API_KEY=config_dict['PUSHBULLET_API_KEY'],
-        TRANSLATION_LANGUAGE=config_dict.get('TRANSLATION_LANGUAGE', 'en')
-    )
+    config_file = os.getenv('CONFIG_FILE', 'config.json')
+    try:
+        with open(config_file, 'r') as f:
+            config_dict = json.load(f)
+        return Config(**config_dict)
+    except FileNotFoundError:
+        print(f"Configuration file {config_file} not found.")
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON from {config_file}.")
 
 config = load_config()
 

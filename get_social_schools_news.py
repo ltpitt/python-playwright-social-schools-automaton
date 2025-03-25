@@ -12,6 +12,9 @@ import json
 from docx import Document
 from dataclasses import dataclass
 from typing import Optional
+import configparser
+import tempfile
+import shutil
 
 @dataclass
 class Config:
@@ -21,19 +24,26 @@ class Config:
     TRANSLATION_LANGUAGE: str = "en"
 
 def load_config() -> Config:
-    config_file = os.getenv('CONFIG_FILE', 'config.json')
-    try:
-        with open(config_file, 'r') as f:
-            config_dict = json.load(f)
-        return Config(**config_dict)
-    except FileNotFoundError:
-        print(f"Configuration file {config_file} not found.")
-    except json.JSONDecodeError:
-        print(f"Error decoding JSON from {config_file}.")
+    # Try user's config first, then fall back to example config
+    config_file = 'config.ini' if os.path.exists('config.ini') else 'config.example.ini'
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    
+    return Config(
+        SCRAPED_WEBSITE_USER=config['DEFAULT']['SCRAPED_WEBSITE_USER'],
+        SCRAPED_WEBSITE_PASSWORD=config['DEFAULT']['SCRAPED_WEBSITE_PASSWORD'],
+        PUSHBULLET_API_KEY=config['DEFAULT']['PUSHBULLET_API_KEY'],
+        TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en')
+    )
 
-config = load_config()
+config = None
 
-# Enhanced logging configuration
+def get_config() -> Config:
+    global config
+    if config is None:
+        config = load_config()
+    return config
+
 logging.basicConfig(
     level=logging.DEBUG,  # Changed to DEBUG for more detailed logging
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -45,7 +55,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# File to store processed article IDs
 PROCESSED_ARTICLES_FILE = "processed_articles.json"
 
 def load_processed_articles():
@@ -95,7 +104,9 @@ def extract_text(pdf_path):
     return text
 
 
-def translate(text, src="nl", dest=config.TRANSLATION_LANGUAGE, chunk_size=4900):
+def translate(text, src="nl", dest=None, chunk_size=4900):
+    if dest is None:
+        dest = get_config().TRANSLATION_LANGUAGE
     logger.info(f"Translating text from {src} to {dest}")
     translator = GoogleTranslator(source=src, target=dest)
     chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
@@ -104,7 +115,9 @@ def translate(text, src="nl", dest=config.TRANSLATION_LANGUAGE, chunk_size=4900)
     return " ".join(translated_chunks)
 
 
-def send_notification(title, body, api_key):
+def send_notification(title, body, api_key=None):
+    if api_key is None:
+        api_key = get_config().PUSHBULLET_API_KEY
     try:
         logger.info(f"Sending Pushbullet notification with title: {title}")
         params = {"type": "note", "title": title, "body": body}
@@ -121,38 +134,27 @@ def send_notification(title, body, api_key):
         logger.error(f"Error sending Pushbullet notification: {e}")
 
 
-def process_pdf_links(playwright, browser, context, pdf_links, folder_path):
-    for link in pdf_links:
-        pdf_url = link.get_attribute("href")
-        pdf_filename = pdf_url.split("/")[-1].split("?")[0]
-        pdf_path = os.path.join(folder_path, pdf_filename)
+def process_pdf_links(playwright, browser, context, pdf_links):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for link in pdf_links:
+            pdf_url = link.get_attribute("href")
+            pdf_filename = pdf_url.split("/")[-1].split("?")[0]
+            pdf_path = os.path.join(temp_dir, pdf_filename)
 
-        download_pdf(pdf_url, pdf_path)
-        text = extract_text(pdf_path)
+            download_pdf(pdf_url, pdf_path)
+            text = extract_text(pdf_path)
 
-        txt_filename = pdf_filename.replace(".pdf", ".txt")
-        txt_path = os.path.join(folder_path, txt_filename)
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(text)
+            send_notification(
+                title=f"Original PDF: {pdf_filename}",
+                body=text,
+            )
 
-        send_notification(
-            title=f"Original PDF: {txt_filename}",
-            body=text,
-            api_key=config.PUSHBULLET_API_KEY,
-        )
+            translated_text = translate(text)
 
-        translated_text = translate(text)
-
-        italian_txt_filename = pdf_filename.replace(".pdf", ".italian.txt")
-        italian_txt_path = os.path.join(folder_path, italian_txt_filename)
-        with open(italian_txt_path, "w", encoding="utf-8") as f:
-            f.write(translated_text)
-
-        send_notification(
-            title=f"Translated PDF: {italian_txt_filename}",
-            body=translated_text,
-            api_key=config.PUSHBULLET_API_KEY,
-        )
+            send_notification(
+                title=f"Translated PDF: {pdf_filename}",
+                body=translated_text,
+            )
 
 
 def extract_text_from_docx(docx_path):
@@ -165,38 +167,27 @@ def extract_text_from_docx(docx_path):
     return text
 
 
-def process_docx_links(playwright, browser, context, docx_links, folder_path):
-    for link in docx_links:
-        docx_url = link.get_attribute("href")
-        docx_filename = docx_url.split("/")[-1].split("?")[0]
-        docx_path = os.path.join(folder_path, docx_filename)
+def process_docx_links(playwright, browser, context, docx_links):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for link in docx_links:
+            docx_url = link.get_attribute("href")
+            docx_filename = docx_url.split("/")[-1].split("?")[0]
+            docx_path = os.path.join(temp_dir, docx_filename)
 
-        download_pdf(docx_url, docx_path)  # We can reuse the download_pdf function
-        text = extract_text_from_docx(docx_path)
+            download_pdf(docx_url, docx_path)
+            text = extract_text_from_docx(docx_path)
 
-        txt_filename = docx_filename.replace(".docx", ".txt")
-        txt_path = os.path.join(folder_path, txt_filename)
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(text)
+            send_notification(
+                title=f"Original Word Document: {docx_filename}",
+                body=text,
+            )
 
-        send_notification(
-            title=f"Original Word Document: {txt_filename}",
-            body=text,
-            api_key=config.PUSHBULLET_API_KEY,
-        )
+            translated_text = translate(text)
 
-        translated_text = translate(text)
-
-        translated_txt_filename = docx_filename.replace(".docx", ".translated.txt")
-        translated_txt_path = os.path.join(folder_path, translated_txt_filename)
-        with open(translated_txt_path, "w", encoding="utf-8") as f:
-            f.write(translated_text)
-
-        send_notification(
-            title=f"Translated Word Document: {translated_txt_filename}",
-            body=translated_text,
-            api_key=config.PUSHBULLET_API_KEY,
-        )
+            send_notification(
+                title=f"Translated Word Document: {docx_filename}",
+                body=translated_text,
+            )
 
 
 def run(playwright):
@@ -227,12 +218,12 @@ def login_to_website(page):
         username_field = page.locator("#username")
         if not username_field.is_visible():
             raise Exception("Username field not found")
-        page.fill("#username", config.SCRAPED_WEBSITE_USER)
+        page.fill("#username", get_config().SCRAPED_WEBSITE_USER)
 
         password_field = page.locator("#Password")
         if not password_field.is_visible():
             raise Exception("Password field not found")
-        page.fill("#Password", config.SCRAPED_WEBSITE_PASSWORD)
+        page.fill("#Password", get_config().SCRAPED_WEBSITE_PASSWORD)
 
         page.press("#Password", "Enter")
 
@@ -285,7 +276,6 @@ def process_first_article(playwright, browser, context, page):
         logger.info(f"Processing new article: {article_id}")
 
         expand_full_text(first_article)
-        input("Press Enter to continue after checking the expanded text...")
         
         process_article_content(playwright, browser, context, first_article)
         
@@ -315,22 +305,20 @@ def process_article_content(playwright, browser, context, article):
     send_notification(
         title=title,
         body=body,
-        api_key=config.PUSHBULLET_API_KEY,
     )
 
     send_notification(
         title=translate(title),
         body=translate(body),
-        api_key=config.PUSHBULLET_API_KEY,
     )
 
     pdf_links = article.query_selector_all("a[href*='.pdf']")
     if len(pdf_links) > 0:
-        process_pdf_links(playwright, browser, context, pdf_links, "")
+        process_pdf_links(playwright, browser, context, pdf_links)
     
     docx_links = article.query_selector_all("a[href*='.docx']")
     if len(docx_links) > 0:
-        process_docx_links(playwright, browser, context, docx_links, "")
+        process_docx_links(playwright, browser, context, docx_links)
     
     if len(pdf_links) == 0 and len(docx_links) == 0:
         logger.info("No PDFs or Word documents available, sent article body in notification.")

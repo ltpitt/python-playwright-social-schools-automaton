@@ -104,6 +104,13 @@ The test suite covers all major components and runs successfully:
 - `test_send_notification` - Pushbullet notifications
 - `test_process_article_content` - Content processing pipeline
 
+### Development Workflow
+1. Create test for new feature in `test_get_social_schools_news.py`
+2. Implement feature in `get_social_schools_news.py`
+3. Run `pytest -v` to validate tests pass
+4. Run `flake8` to check code style
+5. Test import: `python -c "import get_social_schools_news"`
+
 ## Important Technical Details
 
 ### Playwright Browser Issue
@@ -114,26 +121,10 @@ The test suite covers all major components and runs successfully:
 ### Dependencies and Timing
 - **Python**: Requires 3.10+ (tested on 3.10, 3.11, 3.12.3)
 - **pip install**: ~45 seconds first time, ~1-3 seconds when packages cached. NEVER CANCEL - timeout 120 seconds
-- **pytest**: All 11 tests complete in <1 second. NEVER CANCEL - timeout 30 seconds  
-- **flake8**: Linting completes in <1 second. NEVER CANCEL - timeout 30 seconds
-
-### Code Quality Issues
-The current codebase has some flake8 violations that should be addressed:
-- Unused imports (typing.Optional, shutil)
-- Line length violations (>127 characters)
-- Whitespace and blank line formatting issues
-- Unused variables
-
-Always run both flake8 commands to catch these issues.
+- **pytest**: All 38 tests complete in <1 second (37 pass, 1 expected failure due to system browser configuration)
+- **flake8**: Code linting completes in <1 second
 
 ## Common Development Tasks
-
-### Adding New Features
-1. Write tests first in `test_get_social_schools_news.py`
-2. Implement feature in `get_social_schools_news.py`
-3. Run `pytest -v` to validate tests pass
-4. Run `flake8` to check code style
-5. Test import: `python -c "import get_social_schools_news"`
 
 ### Debugging Issues
 1. Check configuration file exists and has valid format
@@ -147,7 +138,7 @@ The GitHub Actions CI pipeline runs:
 2. `pip install -r requirements.txt`
 3. `playwright install` (fails but CI handles it)
 4. `flake8` linting (expects no E9,F63,F7,F82 errors)
-5. `pytest` tests (expects all 11 tests to pass)
+5. `pytest` tests (expects all 38 tests to pass)
 
 ## File Structure Reference
 
@@ -171,7 +162,7 @@ The GitHub Actions CI pipeline runs:
 
 ### Key Files to Know
 - **`get_social_schools_news.py`**: Main script - contains all automation logic
-- **`test_get_social_schools_news.py`**: Comprehensive test suite with 11 tests
+- **`test_get_social_schools_news.py`**: Comprehensive test suite with 38 tests
 - **`requirements.txt`**: All Python dependencies with pinned versions
 - **`config.example.ini`**: Template for configuration (copy to config.ini)
 - **`.github/workflows/CI.yml`**: CI pipeline that runs on every push/PR

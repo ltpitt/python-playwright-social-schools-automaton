@@ -192,7 +192,11 @@ def process_docx_links(playwright, browser, context, docx_links):
 
 def run(playwright):
     try:
-        browser = playwright.chromium.launch(headless=True)
+        # Use system browser due to Playwright download issues
+        browser = playwright.chromium.launch(
+            headless=True, 
+            executable_path='/usr/bin/chromium-browser'
+        )
         context = browser.new_context()
         page = context.new_page()
 

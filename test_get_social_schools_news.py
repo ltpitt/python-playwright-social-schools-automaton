@@ -563,7 +563,10 @@ def test_run_function_success(mock_playwright):
 
         run(playwright)
 
-        playwright.chromium.launch.assert_called_once_with(headless=True)
+        playwright.chromium.launch.assert_called_once_with(
+            headless=True, 
+            executable_path='/usr/bin/chromium-browser'
+        )
         browser.new_context.assert_called_once()
         context.new_page.assert_called_once()
         mock_login.assert_called_once_with(page)

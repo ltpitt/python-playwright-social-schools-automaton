@@ -11,10 +11,9 @@ from deep_translator import GoogleTranslator
 import json
 from docx import Document
 from dataclasses import dataclass
-from typing import Optional
 import configparser
 import tempfile
-import shutil
+
 
 @dataclass
 class Config:
@@ -23,12 +22,13 @@ class Config:
     PUSHBULLET_API_KEY: str
     TRANSLATION_LANGUAGE: str = "en"
 
+
 def load_config() -> Config:
     # Try user's config first, then fall back to example config
     config_file = 'config.ini' if os.path.exists('config.ini') else 'config.example.ini'
     config = configparser.ConfigParser()
     config.read(config_file)
-    
+
     return Config(
         SCRAPED_WEBSITE_USER=config['DEFAULT']['SCRAPED_WEBSITE_USER'],
         SCRAPED_WEBSITE_PASSWORD=config['DEFAULT']['SCRAPED_WEBSITE_PASSWORD'],
@@ -36,13 +36,16 @@ def load_config() -> Config:
         TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en')
     )
 
+
 config = None
+
 
 def get_config() -> Config:
     global config
     if config is None:
         config = load_config()
     return config
+
 
 logging.basicConfig(
     level=logging.DEBUG,  # Changed to DEBUG for more detailed logging
@@ -57,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 PROCESSED_ARTICLES_FILE = "processed_articles.json"
 
+
 def load_processed_articles():
     try:
         if os.path.exists(PROCESSED_ARTICLES_FILE):
@@ -66,6 +70,7 @@ def load_processed_articles():
     except Exception as e:
         logger.error(f"Error loading processed articles: {e}")
         return []
+
 
 def save_processed_article(article_id):
     try:
@@ -79,6 +84,7 @@ def save_processed_article(article_id):
     except Exception as e:
         logger.error(f"Error saving processed article: {e}")
         return False
+
 
 def download_pdf(url, output_path):
     logger.info(f"Starting download of PDF from {url}")
@@ -109,7 +115,7 @@ def translate(text, src="nl", dest=None, chunk_size=4900):
         dest = get_config().TRANSLATION_LANGUAGE
     logger.info(f"Translating text from {src} to {dest}")
     translator = GoogleTranslator(source=src, target=dest)
-    chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+    chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
     translated_chunks = [translator.translate(chunk) for chunk in chunks]
     logger.info("Translation complete")
     return " ".join(translated_chunks)
@@ -121,7 +127,7 @@ def send_notification(title, body, api_key=None):
     try:
         logger.info(f"Sending Pushbullet notification with title: {title}")
         params = {"type": "note", "title": title, "body": body}
-        response = requests.post(
+        requests.post(
             "https://api.pushbullet.com/v2/pushes",
             data=json.dumps(params),
             headers={
@@ -194,7 +200,7 @@ def run(playwright):
     try:
         # Use system browser due to Playwright download issues
         browser = playwright.chromium.launch(
-            headless=True, 
+            headless=True,
             executable_path='/usr/bin/chromium-browser'
         )
         context = browser.new_context()
@@ -268,7 +274,9 @@ def process_first_article(playwright, browser, context, page):
         if not article_id:
             logger.debug("No article ID found, generating from title and timestamp")
             title = first_article.query_selector("h3").inner_text()
-            timestamp = first_article.query_selector("time").get_attribute("datetime") if first_article.query_selector("time") else datetime.now().isoformat()
+            timestamp_element = first_article.query_selector("time")
+            timestamp = (timestamp_element.get_attribute("datetime")
+                         if timestamp_element else datetime.now().isoformat())
             article_id = f"{title}_{timestamp}"
             logger.info(f"Generated article ID: {article_id}")
         else:
@@ -280,9 +288,9 @@ def process_first_article(playwright, browser, context, page):
         logger.info(f"Processing new article: {article_id}")
 
         expand_full_text(first_article)
-        
+
         process_article_content(playwright, browser, context, first_article)
-        
+
     except Exception as e:
         logger.error(f"Error processing first article: {str(e)}")
         logger.error(f"Stack trace: {traceback.format_exc()}")
@@ -319,11 +327,11 @@ def process_article_content(playwright, browser, context, article):
     pdf_links = article.query_selector_all("a[href*='.pdf']")
     if len(pdf_links) > 0:
         process_pdf_links(playwright, browser, context, pdf_links)
-    
+
     docx_links = article.query_selector_all("a[href*='.docx']")
     if len(docx_links) > 0:
         process_docx_links(playwright, browser, context, docx_links)
-    
+
     if len(pdf_links) == 0 and len(docx_links) == 0:
         logger.info("No PDFs or Word documents available, sent article body in notification.")
 

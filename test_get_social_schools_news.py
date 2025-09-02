@@ -300,6 +300,42 @@ def test_download_docx_success():
         mock_file.assert_called_once_with("/tmp/test.docx", "wb")
 
 
+def test_download_pdf_invalid_url():
+    """Test PDF download with invalid URL"""
+    with pytest.raises(ValueError, match="Invalid URL for PDF download"):
+        download_pdf("invalid-url", "/tmp/test.pdf")
+    
+    with pytest.raises(ValueError, match="Invalid URL for PDF download"):
+        download_pdf("", "/tmp/test.pdf")
+
+
+def test_download_pdf_invalid_path():
+    """Test PDF download with invalid path"""
+    with pytest.raises(ValueError, match="Invalid output path for PDF"):
+        download_pdf("http://example.com/test.pdf", "../dangerous/path.pdf")
+    
+    with pytest.raises(ValueError, match="Invalid output path for PDF"):
+        download_pdf("http://example.com/test.pdf", "")
+
+
+def test_download_docx_invalid_url():
+    """Test DOCX download with invalid URL"""
+    with pytest.raises(ValueError, match="Invalid URL for DOCX download"):
+        download_docx("invalid-url", "/tmp/test.docx")
+    
+    with pytest.raises(ValueError, match="Invalid URL for DOCX download"):
+        download_docx("", "/tmp/test.docx")
+
+
+def test_download_docx_invalid_path():
+    """Test DOCX download with invalid path"""
+    with pytest.raises(ValueError, match="Invalid output path for DOCX"):
+        download_docx("http://example.com/test.docx", "../dangerous/path.docx")
+    
+    with pytest.raises(ValueError, match="Invalid output path for DOCX"):
+        download_docx("http://example.com/test.docx", "")
+
+
 def test_extract_text_from_pdf():
     """Test text extraction from PDF"""
     mock_text = "Extracted PDF text content"

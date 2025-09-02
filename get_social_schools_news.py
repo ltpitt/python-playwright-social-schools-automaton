@@ -60,6 +60,14 @@ logger = logging.getLogger(__name__)
 
 PROCESSED_ARTICLES_FILE = "processed_articles.json"
 
+# Application constants
+SOCIAL_SCHOOLS_URL = "https://app.socialschools.eu/home"
+PUSHBULLET_API_URL = "https://api.pushbullet.com/v2/pushes"
+SYSTEM_BROWSER_PATH = '/usr/bin/chromium-browser'
+EXPAND_BUTTON_TEXT = "Meer weergeven"
+DEFAULT_CHUNK_SIZE = 4900
+NETWORK_TIMEOUT = 30000
+
 
 def load_processed_articles():
     try:
@@ -87,6 +95,11 @@ def save_processed_article(article_id):
 
 
 def download_pdf(url, output_path):
+    if not url or not url.startswith(('http://', 'https://')):
+        raise ValueError(f"Invalid URL for PDF download: {url}")
+    if not output_path or '..' in output_path:
+        raise ValueError(f"Invalid output path for PDF: {output_path}")
+
     logger.info(f"Starting download of PDF from {url}")
     buffer = BytesIO()
     c = pycurl.Curl()
@@ -101,6 +114,11 @@ def download_pdf(url, output_path):
 
 
 def download_docx(url, output_path):
+    if not url or not url.startswith(('http://', 'https://')):
+        raise ValueError(f"Invalid URL for DOCX download: {url}")
+    if not output_path or '..' in output_path:
+        raise ValueError(f"Invalid output path for DOCX: {output_path}")
+
     logger.info(f"Starting download of DOCX from {url}")
     buffer = BytesIO()
     c = pycurl.Curl()
@@ -117,14 +135,17 @@ def download_docx(url, output_path):
 def extract_text(pdf_path):
     logger.info(f"Extracting text from PDF {pdf_path}")
     doc = fitz.open(pdf_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    logger.info(f"Text extraction complete for {pdf_path}")
-    return text
+    try:
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        logger.info(f"Text extraction complete for {pdf_path}")
+        return text
+    finally:
+        doc.close()
 
 
-def translate(text, src="nl", dest=None, chunk_size=4900):
+def translate(text, src="nl", dest=None, chunk_size=DEFAULT_CHUNK_SIZE):
     if dest is None:
         dest = get_config().TRANSLATION_LANGUAGE
     logger.info(f"Translating text from {src} to {dest}")
@@ -142,7 +163,7 @@ def send_notification(title, body, api_key=None):
         logger.info(f"Sending Pushbullet notification with title: {title}")
         params = {"type": "note", "title": title, "body": body}
         requests.post(
-            "https://api.pushbullet.com/v2/pushes",
+            PUSHBULLET_API_URL,
             data=json.dumps(params),
             headers={
                 "Authorization": "Bearer " + api_key,
@@ -215,7 +236,7 @@ def run(playwright):
         # Use system browser due to Playwright download issues
         browser = playwright.chromium.launch(
             headless=True,
-            executable_path='/usr/bin/chromium-browser'
+            executable_path=SYSTEM_BROWSER_PATH
         )
         context = browser.new_context()
         page = context.new_page()
@@ -236,7 +257,7 @@ def run(playwright):
 
 def login_to_website(page):
     try:
-        page.goto("https://app.socialschools.eu/home")
+        page.goto(SOCIAL_SCHOOLS_URL)
         page.wait_for_load_state("networkidle")
 
         username_field = page.locator("#username")
@@ -252,7 +273,7 @@ def login_to_website(page):
         page.press("#Password", "Enter")
 
         try:
-            page.wait_for_load_state("networkidle", timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=NETWORK_TIMEOUT)
         except PlaywrightTimeoutError:
             raise
     except Exception as e:
@@ -313,7 +334,7 @@ def process_first_article(playwright, browser, context, page):
 
 def expand_full_text(article):
     try:
-        more_button = article.query_selector("button:has-text('Meer weergeven')")
+        more_button = article.query_selector(f"button:has-text('{EXPAND_BUTTON_TEXT}')")
         if more_button:
             more_button.click()
 

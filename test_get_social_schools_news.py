@@ -17,6 +17,7 @@ from get_social_schools_news import (  # noqa: E402
     load_config,
     get_config,
     download_pdf,
+    download_docx,
     extract_text,
     process_pdf_links,
     extract_text_from_docx,
@@ -281,6 +282,80 @@ def test_download_pdf_success():
             mock_file.assert_called_once_with("/tmp/test.pdf", "wb")
 
 
+def test_download_docx_success():
+    """Test successful DOCX download"""
+    with patch('get_social_schools_news.pycurl.Curl') as mock_curl_class, \
+         patch('builtins.open', mock_open()) as mock_file:
+
+        mock_curl = Mock()
+        mock_curl_class.return_value = mock_curl
+
+        download_docx("http://example.com/test.docx", "/tmp/test.docx")
+
+        # Verify pycurl setup
+        mock_curl.setopt.assert_any_call(mock_curl.URL, "http://example.com/test.docx")
+        mock_curl.setopt.assert_any_call(mock_curl.WRITEDATA, mock_curl.setopt.call_args_list[1][0][1])
+        mock_curl.perform.assert_called_once()
+        mock_curl.close.assert_called_once()
+        mock_file.assert_called_once_with("/tmp/test.docx", "wb")
+
+
+def test_download_pdf_invalid_url():
+    """Test PDF download with invalid URL"""
+    with pytest.raises(ValueError, match="Invalid URL for PDF download"):
+        download_pdf("invalid-url", "/tmp/test.pdf")
+    
+    with pytest.raises(ValueError, match="Invalid URL for PDF download"):
+        download_pdf("", "/tmp/test.pdf")
+
+
+def test_download_pdf_invalid_path():
+    """Test PDF download with invalid path"""
+    with pytest.raises(ValueError, match="Invalid output path for PDF"):
+        download_pdf("http://example.com/test.pdf", "../dangerous/path.pdf")
+    
+    with pytest.raises(ValueError, match="Invalid output path for PDF"):
+        download_pdf("http://example.com/test.pdf", "")
+
+
+def test_download_docx_invalid_url():
+    """Test DOCX download with invalid URL"""
+    with pytest.raises(ValueError, match="Invalid URL for DOCX download"):
+        download_docx("invalid-url", "/tmp/test.docx")
+    
+    with pytest.raises(ValueError, match="Invalid URL for DOCX download"):
+        download_docx("", "/tmp/test.docx")
+
+
+def test_download_docx_invalid_path():
+    """Test DOCX download with invalid path"""
+    with pytest.raises(ValueError, match="Invalid output path for DOCX"):
+        download_docx("http://example.com/test.docx", "../dangerous/path.docx")
+    
+    with pytest.raises(ValueError, match="Invalid output path for DOCX"):
+        download_docx("http://example.com/test.docx", "")
+
+
+def test_download_with_retry_mechanism():
+    """Test download retry mechanism"""
+    with patch('get_social_schools_news.pycurl.Curl') as mock_curl_class, \
+         patch('builtins.open', mock_open()) as mock_file, \
+         patch('get_social_schools_news.time.sleep') as mock_sleep:
+
+        mock_curl = Mock()
+        mock_curl_class.return_value = mock_curl
+        
+        # Make it fail twice, then succeed
+        mock_curl.perform.side_effect = [Exception("Network error"), Exception("Network error"), None]
+
+        download_pdf("http://example.com/test.pdf", "/tmp/test.pdf")
+
+        # Verify retry behavior
+        assert mock_curl.perform.call_count == 3
+        assert mock_sleep.call_count == 2  # Two retry delays
+        mock_file.assert_called_once_with("/tmp/test.pdf", "wb")
+
+
 def test_extract_text_from_pdf():
     """Test text extraction from PDF"""
     mock_text = "Extracted PDF text content"
@@ -360,7 +435,7 @@ def test_process_docx_links():
     mock_link.get_attribute.return_value = "http://example.com/test.docx"
     docx_links = [mock_link]
 
-    with patch('get_social_schools_news.download_pdf') as mock_download, \
+    with patch('get_social_schools_news.download_docx') as mock_download, \
          patch('get_social_schools_news.extract_text_from_docx') as \
          mock_extract, \
          patch('get_social_schools_news.translate') as mock_translate, \

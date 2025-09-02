@@ -2,8 +2,10 @@ import os
 import pycurl
 import logging
 import traceback
+import time
 from io import BytesIO
 from datetime import datetime
+from typing import List, Optional
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import fitz  # PyMuPDF
 import requests
@@ -60,8 +62,20 @@ logger = logging.getLogger(__name__)
 
 PROCESSED_ARTICLES_FILE = "processed_articles.json"
 
+# Application constants
+SOCIAL_SCHOOLS_URL = "https://app.socialschools.eu/home"
+PUSHBULLET_API_URL = "https://api.pushbullet.com/v2/pushes"
+SYSTEM_BROWSER_PATH = '/usr/bin/chromium-browser'
+EXPAND_BUTTON_TEXT = "Meer weergeven"
+DEFAULT_CHUNK_SIZE = 4900
+NETWORK_TIMEOUT = 30000
 
-def load_processed_articles():
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY = 2.0
+
+
+def load_processed_articles() -> List[str]:
     try:
         if os.path.exists(PROCESSED_ARTICLES_FILE):
             with open(PROCESSED_ARTICLES_FILE, 'r') as f:
@@ -72,7 +86,7 @@ def load_processed_articles():
         return []
 
 
-def save_processed_article(article_id):
+def save_processed_article(article_id: str) -> bool:
     try:
         processed = load_processed_articles()
         if article_id not in processed:
@@ -86,31 +100,76 @@ def save_processed_article(article_id):
         return False
 
 
-def download_pdf(url, output_path):
-    logger.info(f"Starting download of PDF from {url}")
-    buffer = BytesIO()
-    c = pycurl.Curl()
-    c.setopt(c.URL, url)
-    c.setopt(c.WRITEDATA, buffer)
-    c.perform()
-    c.close()
-
-    with open(output_path, "wb") as f:
-        f.write(buffer.getvalue())
-    logger.info(f"PDF downloaded and saved to {output_path}")
+def _retry_operation(operation, max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
+    """Simple retry mechanism for network operations"""
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(f"Operation failed (attempt {attempt + 1}/{max_retries}): {e}")
+            time.sleep(delay * (attempt + 1))  # Exponential backoff
 
 
-def extract_text(pdf_path):
+def download_pdf(url: str, output_path: str) -> None:
+    if not url or not url.startswith(('http://', 'https://')):
+        raise ValueError(f"Invalid URL for PDF download: {url}")
+    if not output_path or '..' in output_path:
+        raise ValueError(f"Invalid output path for PDF: {output_path}")
+
+    def _download():
+        logger.info(f"Starting download of PDF from {url}")
+        buffer = BytesIO()
+        c = pycurl.Curl()
+        c.setopt(c.URL, url)
+        c.setopt(c.WRITEDATA, buffer)
+        c.perform()
+        c.close()
+
+        with open(output_path, "wb") as f:
+            f.write(buffer.getvalue())
+        logger.info(f"PDF downloaded and saved to {output_path}")
+
+    _retry_operation(_download)
+
+
+def download_docx(url: str, output_path: str) -> None:
+    if not url or not url.startswith(('http://', 'https://')):
+        raise ValueError(f"Invalid URL for DOCX download: {url}")
+    if not output_path or '..' in output_path:
+        raise ValueError(f"Invalid output path for DOCX: {output_path}")
+
+    def _download():
+        logger.info(f"Starting download of DOCX from {url}")
+        buffer = BytesIO()
+        c = pycurl.Curl()
+        c.setopt(c.URL, url)
+        c.setopt(c.WRITEDATA, buffer)
+        c.perform()
+        c.close()
+
+        with open(output_path, "wb") as f:
+            f.write(buffer.getvalue())
+        logger.info(f"DOCX downloaded and saved to {output_path}")
+
+    _retry_operation(_download)
+
+
+def extract_text(pdf_path: str) -> str:
     logger.info(f"Extracting text from PDF {pdf_path}")
     doc = fitz.open(pdf_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    logger.info(f"Text extraction complete for {pdf_path}")
-    return text
+    try:
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        logger.info(f"Text extraction complete for {pdf_path}")
+        return text
+    finally:
+        doc.close()
 
 
-def translate(text, src="nl", dest=None, chunk_size=4900):
+def translate(text: str, src: str = "nl", dest: Optional[str] = None, chunk_size: int = DEFAULT_CHUNK_SIZE) -> str:
     if dest is None:
         dest = get_config().TRANSLATION_LANGUAGE
     logger.info(f"Translating text from {src} to {dest}")
@@ -121,14 +180,14 @@ def translate(text, src="nl", dest=None, chunk_size=4900):
     return " ".join(translated_chunks)
 
 
-def send_notification(title, body, api_key=None):
+def send_notification(title: str, body: str, api_key: Optional[str] = None) -> None:
     if api_key is None:
         api_key = get_config().PUSHBULLET_API_KEY
     try:
         logger.info(f"Sending Pushbullet notification with title: {title}")
         params = {"type": "note", "title": title, "body": body}
         requests.post(
-            "https://api.pushbullet.com/v2/pushes",
+            PUSHBULLET_API_URL,
             data=json.dumps(params),
             headers={
                 "Authorization": "Bearer " + api_key,
@@ -163,7 +222,7 @@ def process_pdf_links(playwright, browser, context, pdf_links):
             )
 
 
-def extract_text_from_docx(docx_path):
+def extract_text_from_docx(docx_path: str) -> str:
     logger.info(f"Extracting text from Word document {docx_path}")
     doc = Document(docx_path)
     text = ""
@@ -180,7 +239,7 @@ def process_docx_links(playwright, browser, context, docx_links):
             docx_filename = docx_url.split("/")[-1].split("?")[0]
             docx_path = os.path.join(temp_dir, docx_filename)
 
-            download_pdf(docx_url, docx_path)
+            download_docx(docx_url, docx_path)
             text = extract_text_from_docx(docx_path)
 
             send_notification(
@@ -201,7 +260,7 @@ def run(playwright):
         # Use system browser due to Playwright download issues
         browser = playwright.chromium.launch(
             headless=True,
-            executable_path='/usr/bin/chromium-browser'
+            executable_path=SYSTEM_BROWSER_PATH
         )
         context = browser.new_context()
         page = context.new_page()
@@ -222,7 +281,7 @@ def run(playwright):
 
 def login_to_website(page):
     try:
-        page.goto("https://app.socialschools.eu/home")
+        page.goto(SOCIAL_SCHOOLS_URL)
         page.wait_for_load_state("networkidle")
 
         username_field = page.locator("#username")
@@ -238,7 +297,7 @@ def login_to_website(page):
         page.press("#Password", "Enter")
 
         try:
-            page.wait_for_load_state("networkidle", timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=NETWORK_TIMEOUT)
         except PlaywrightTimeoutError:
             raise
     except Exception as e:
@@ -299,7 +358,7 @@ def process_first_article(playwright, browser, context, page):
 
 def expand_full_text(article):
     try:
-        more_button = article.query_selector("button:has-text('Meer weergeven')")
+        more_button = article.query_selector(f"button:has-text('{EXPAND_BUTTON_TEXT}')")
         if more_button:
             more_button.click()
 

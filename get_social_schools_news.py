@@ -100,6 +100,20 @@ def download_pdf(url, output_path):
     logger.info(f"PDF downloaded and saved to {output_path}")
 
 
+def download_docx(url, output_path):
+    logger.info(f"Starting download of DOCX from {url}")
+    buffer = BytesIO()
+    c = pycurl.Curl()
+    c.setopt(c.URL, url)
+    c.setopt(c.WRITEDATA, buffer)
+    c.perform()
+    c.close()
+
+    with open(output_path, "wb") as f:
+        f.write(buffer.getvalue())
+    logger.info(f"DOCX downloaded and saved to {output_path}")
+
+
 def extract_text(pdf_path):
     logger.info(f"Extracting text from PDF {pdf_path}")
     doc = fitz.open(pdf_path)
@@ -180,7 +194,7 @@ def process_docx_links(playwright, browser, context, docx_links):
             docx_filename = docx_url.split("/")[-1].split("?")[0]
             docx_path = os.path.join(temp_dir, docx_filename)
 
-            download_pdf(docx_url, docx_path)
+            download_docx(docx_url, docx_path)
             text = extract_text_from_docx(docx_path)
 
             send_notification(

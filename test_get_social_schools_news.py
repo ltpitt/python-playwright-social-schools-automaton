@@ -17,6 +17,7 @@ from get_social_schools_news import (  # noqa: E402
     load_config,
     get_config,
     download_pdf,
+    download_docx,
     extract_text,
     process_pdf_links,
     extract_text_from_docx,
@@ -281,6 +282,24 @@ def test_download_pdf_success():
             mock_file.assert_called_once_with("/tmp/test.pdf", "wb")
 
 
+def test_download_docx_success():
+    """Test successful DOCX download"""
+    with patch('get_social_schools_news.pycurl.Curl') as mock_curl_class, \
+         patch('builtins.open', mock_open()) as mock_file:
+
+        mock_curl = Mock()
+        mock_curl_class.return_value = mock_curl
+
+        download_docx("http://example.com/test.docx", "/tmp/test.docx")
+
+        # Verify pycurl setup
+        mock_curl.setopt.assert_any_call(mock_curl.URL, "http://example.com/test.docx")
+        mock_curl.setopt.assert_any_call(mock_curl.WRITEDATA, mock_curl.setopt.call_args_list[1][0][1])
+        mock_curl.perform.assert_called_once()
+        mock_curl.close.assert_called_once()
+        mock_file.assert_called_once_with("/tmp/test.docx", "wb")
+
+
 def test_extract_text_from_pdf():
     """Test text extraction from PDF"""
     mock_text = "Extracted PDF text content"
@@ -360,7 +379,7 @@ def test_process_docx_links():
     mock_link.get_attribute.return_value = "http://example.com/test.docx"
     docx_links = [mock_link]
 
-    with patch('get_social_schools_news.download_pdf') as mock_download, \
+    with patch('get_social_schools_news.download_docx') as mock_download, \
          patch('get_social_schools_news.extract_text_from_docx') as \
          mock_extract, \
          patch('get_social_schools_news.translate') as mock_translate, \

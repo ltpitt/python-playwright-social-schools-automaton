@@ -336,6 +336,26 @@ def test_download_docx_invalid_path():
         download_docx("http://example.com/test.docx", "")
 
 
+def test_download_with_retry_mechanism():
+    """Test download retry mechanism"""
+    with patch('get_social_schools_news.pycurl.Curl') as mock_curl_class, \
+         patch('builtins.open', mock_open()) as mock_file, \
+         patch('get_social_schools_news.time.sleep') as mock_sleep:
+
+        mock_curl = Mock()
+        mock_curl_class.return_value = mock_curl
+        
+        # Make it fail twice, then succeed
+        mock_curl.perform.side_effect = [Exception("Network error"), Exception("Network error"), None]
+
+        download_pdf("http://example.com/test.pdf", "/tmp/test.pdf")
+
+        # Verify retry behavior
+        assert mock_curl.perform.call_count == 3
+        assert mock_sleep.call_count == 2  # Two retry delays
+        mock_file.assert_called_once_with("/tmp/test.pdf", "wb")
+
+
 def test_extract_text_from_pdf():
     """Test text extraction from PDF"""
     mock_text = "Extracted PDF text content"

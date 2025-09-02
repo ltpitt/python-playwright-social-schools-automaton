@@ -2,8 +2,10 @@ import os
 import pycurl
 import logging
 import traceback
+import time
 from io import BytesIO
 from datetime import datetime
+from typing import List, Optional
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import fitz  # PyMuPDF
 import requests
@@ -68,8 +70,12 @@ EXPAND_BUTTON_TEXT = "Meer weergeven"
 DEFAULT_CHUNK_SIZE = 4900
 NETWORK_TIMEOUT = 30000
 
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY = 2.0
 
-def load_processed_articles():
+
+def load_processed_articles() -> List[str]:
     try:
         if os.path.exists(PROCESSED_ARTICLES_FILE):
             with open(PROCESSED_ARTICLES_FILE, 'r') as f:
@@ -80,7 +86,7 @@ def load_processed_articles():
         return []
 
 
-def save_processed_article(article_id):
+def save_processed_article(article_id: str) -> bool:
     try:
         processed = load_processed_articles()
         if article_id not in processed:
@@ -94,45 +100,63 @@ def save_processed_article(article_id):
         return False
 
 
-def download_pdf(url, output_path):
+def _retry_operation(operation, max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
+    """Simple retry mechanism for network operations"""
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(f"Operation failed (attempt {attempt + 1}/{max_retries}): {e}")
+            time.sleep(delay * (attempt + 1))  # Exponential backoff
+
+
+def download_pdf(url: str, output_path: str) -> None:
     if not url or not url.startswith(('http://', 'https://')):
         raise ValueError(f"Invalid URL for PDF download: {url}")
     if not output_path or '..' in output_path:
         raise ValueError(f"Invalid output path for PDF: {output_path}")
 
-    logger.info(f"Starting download of PDF from {url}")
-    buffer = BytesIO()
-    c = pycurl.Curl()
-    c.setopt(c.URL, url)
-    c.setopt(c.WRITEDATA, buffer)
-    c.perform()
-    c.close()
+    def _download():
+        logger.info(f"Starting download of PDF from {url}")
+        buffer = BytesIO()
+        c = pycurl.Curl()
+        c.setopt(c.URL, url)
+        c.setopt(c.WRITEDATA, buffer)
+        c.perform()
+        c.close()
 
-    with open(output_path, "wb") as f:
-        f.write(buffer.getvalue())
-    logger.info(f"PDF downloaded and saved to {output_path}")
+        with open(output_path, "wb") as f:
+            f.write(buffer.getvalue())
+        logger.info(f"PDF downloaded and saved to {output_path}")
+
+    _retry_operation(_download)
 
 
-def download_docx(url, output_path):
+def download_docx(url: str, output_path: str) -> None:
     if not url or not url.startswith(('http://', 'https://')):
         raise ValueError(f"Invalid URL for DOCX download: {url}")
     if not output_path or '..' in output_path:
         raise ValueError(f"Invalid output path for DOCX: {output_path}")
 
-    logger.info(f"Starting download of DOCX from {url}")
-    buffer = BytesIO()
-    c = pycurl.Curl()
-    c.setopt(c.URL, url)
-    c.setopt(c.WRITEDATA, buffer)
-    c.perform()
-    c.close()
+    def _download():
+        logger.info(f"Starting download of DOCX from {url}")
+        buffer = BytesIO()
+        c = pycurl.Curl()
+        c.setopt(c.URL, url)
+        c.setopt(c.WRITEDATA, buffer)
+        c.perform()
+        c.close()
 
-    with open(output_path, "wb") as f:
-        f.write(buffer.getvalue())
-    logger.info(f"DOCX downloaded and saved to {output_path}")
+        with open(output_path, "wb") as f:
+            f.write(buffer.getvalue())
+        logger.info(f"DOCX downloaded and saved to {output_path}")
+
+    _retry_operation(_download)
 
 
-def extract_text(pdf_path):
+def extract_text(pdf_path: str) -> str:
     logger.info(f"Extracting text from PDF {pdf_path}")
     doc = fitz.open(pdf_path)
     try:
@@ -145,7 +169,7 @@ def extract_text(pdf_path):
         doc.close()
 
 
-def translate(text, src="nl", dest=None, chunk_size=DEFAULT_CHUNK_SIZE):
+def translate(text: str, src: str = "nl", dest: Optional[str] = None, chunk_size: int = DEFAULT_CHUNK_SIZE) -> str:
     if dest is None:
         dest = get_config().TRANSLATION_LANGUAGE
     logger.info(f"Translating text from {src} to {dest}")
@@ -156,7 +180,7 @@ def translate(text, src="nl", dest=None, chunk_size=DEFAULT_CHUNK_SIZE):
     return " ".join(translated_chunks)
 
 
-def send_notification(title, body, api_key=None):
+def send_notification(title: str, body: str, api_key: Optional[str] = None) -> None:
     if api_key is None:
         api_key = get_config().PUSHBULLET_API_KEY
     try:
@@ -198,7 +222,7 @@ def process_pdf_links(playwright, browser, context, pdf_links):
             )
 
 
-def extract_text_from_docx(docx_path):
+def extract_text_from_docx(docx_path: str) -> str:
     logger.info(f"Extracting text from Word document {docx_path}")
     doc = Document(docx_path)
     text = ""

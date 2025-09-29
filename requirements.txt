@@ -1,4 +1,4 @@
-pycurl==7.45.6
+pycurl==7.45.7
 
 pymupdf==1.26.4
 playwright==1.54.0

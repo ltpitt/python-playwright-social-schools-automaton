@@ -288,16 +288,31 @@ def _run_copilot(prompt):
 
 
 def _extract_json(text):
+    # 1. Clean parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+    # 2. Markdown-fenced JSON block
     match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
     if match:
-        return json.loads(match.group(1))
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        return json.loads(match.group(0))
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            pass
+    # 3. Scan forward and use raw_decode to find the first VALID JSON object
+    #    (avoids greedy-regex failures when Copilot wraps JSON in prose)
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        start = text.find('{', idx)
+        if start == -1:
+            break
+        try:
+            obj, _ = decoder.raw_decode(text, start)
+            return obj
+        except json.JSONDecodeError:
+            idx = start + 1
     raise ValueError("No valid JSON found in response")
 
 
@@ -391,6 +406,7 @@ def generate_digest(title, body, attachments):
 
     logger.info("Generating Digest via Copilot CLI")
     raw = _run_copilot(prompt)
+    logger.debug(f"Copilot raw response:\n{raw}")
 
     try:
         digest = _dict_to_digest(_extract_json(raw))

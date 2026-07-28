@@ -22,14 +22,20 @@ Set `DIGEST_ENABLED = false` in `config.ini` if you don't have Copilot access or
 
 ## Notify multiple people
 
-By default, notifications go only to the devices logged into the Pushbullet account that owns `PUSHBULLET_API_KEY`. To share notifications with a partner (or anyone else) without giving them your API key, use a Pushbullet **channel**:
+By default, notifications go only to the devices logged into the Pushbullet account that owns `PUSHBULLET_API_KEY`. To also notify a partner (or anyone else) privately, give each of them their own Pushbullet access token:
 
-1. Go to [pushbullet.com](https://www.pushbullet.com/) → **My Channels** → **Create Channel**. Give it any name and tag (the tag is what goes in config).
-2. Set `PUSHBULLET_CHANNEL_TAG = your-channel-tag` in `config.ini`.
-3. Share the channel's subscribe link (`https://www.pushbullet.com/channel?tag=your-channel-tag`) with anyone who should receive notifications, including yourself if you still want them on your own devices — subscribing is a one-time action in their Pushbullet app.
-4. Everyone subscribed to the channel receives every notification the script sends. No extra API keys or code changes needed.
+1. Each recipient creates their own free [Pushbullet](https://www.pushbullet.com/) account (or uses their existing one) and installs the app on their phone.
+2. Each recipient generates their own access token at [pushbullet.com/#settings/account](https://www.pushbullet.com/#settings/account).
+3. Add those tokens to `config.ini` as `PUSHBULLET_EXTRA_API_KEYS`, comma-separated:
+   ```ini
+   PUSHBULLET_EXTRA_API_KEYS = partners_token_here,another_persons_token_here
+   ```
+4. The script pushes the same notification individually to your key and every extra key. Nobody needs access to anyone else's token, and only the people you explicitly list ever receive anything.
 
-Leave `PUSHBULLET_CHANNEL_TAG` empty to keep the original single-recipient behavior.
+Leave `PUSHBULLET_EXTRA_API_KEYS` empty to keep the original single-recipient behavior.
+
+> We deliberately don't use Pushbullet **channels** for this: channel subscriptions require no approval from the owner, and the `channel-info` API is publicly queryable without authentication — anyone who learns the channel tag can read/subscribe to notifications. Since these notifications can include your child's name, school, and schedule, per-recipient private tokens are the safer choice.
+
 
 ## Why this exists
 

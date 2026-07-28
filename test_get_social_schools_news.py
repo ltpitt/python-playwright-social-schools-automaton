@@ -35,6 +35,7 @@ from get_social_schools_news import (  # noqa: E402
     _get_post_date,
     _COPILOT_TOOL_FREE_ARGS,
     _dict_to_digest,
+    _parse_extra_api_keys,
 )
 
 
@@ -108,32 +109,42 @@ def test_send_notification(mock_config):
         mock_post.assert_called_once()
 
 
-def test_send_notification_without_channel_tag_omits_it(mock_config):
-    """Test that no channel_tag is sent when PUSHBULLET_CHANNEL_TAG is unset (default behavior)"""
+def test_send_notification_without_extra_keys_posts_once(mock_config):
+    """Test that only one push is sent when PUSHBULLET_EXTRA_API_KEYS is unset (default behavior)"""
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
         send_notification("Test Title", "Test Body", "test_key")
-        sent_params = json.loads(mock_post.call_args.kwargs["data"])
-        assert "channel_tag" not in sent_params
+        mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer test_key"
 
 
-def test_send_notification_with_channel_tag_broadcasts():
-    """Test that channel_tag is included in the push payload to reach all channel subscribers"""
+def test_send_notification_with_extra_keys_pushes_to_each_recipient():
+    """Test that the same notification is pushed individually to the primary key and each extra key"""
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
-        send_notification("Test Title", "Test Body", api_key="test_key", channel_tag="family-channel")
-        sent_params = json.loads(mock_post.call_args.kwargs["data"])
-        assert sent_params["channel_tag"] == "family-channel"
+        send_notification("Test Title", "Test Body", api_key="test_key", extra_api_keys=["partner_key"])
+        assert mock_post.call_count == 2
+        sent_keys = [call.kwargs["headers"]["Authorization"] for call in mock_post.call_args_list]
+        assert sent_keys == ["Bearer test_key", "Bearer partner_key"]
 
 
-def test_send_notification_uses_configured_channel_tag(mock_config):
-    """Test that send_notification falls back to Config.PUSHBULLET_CHANNEL_TAG when not passed explicitly"""
-    mock_config.PUSHBULLET_CHANNEL_TAG = "family-channel"
+def test_send_notification_uses_configured_extra_api_keys(mock_config):
+    """Test that send_notification falls back to Config.PUSHBULLET_EXTRA_API_KEYS when not passed explicitly"""
+    mock_config.PUSHBULLET_EXTRA_API_KEYS = "partner_key,another_key"
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
         send_notification("Test Title", "Test Body")
-        sent_params = json.loads(mock_post.call_args.kwargs["data"])
-        assert sent_params["channel_tag"] == "family-channel"
+        assert mock_post.call_count == 3
+        sent_keys = [call.kwargs["headers"]["Authorization"] for call in mock_post.call_args_list]
+        assert sent_keys == ["Bearer test_api_key", "Bearer partner_key", "Bearer another_key"]
+
+
+def test_parse_extra_api_keys_splits_and_strips():
+    assert _parse_extra_api_keys("key1, key2 ,key3") == ["key1", "key2", "key3"]
+
+
+def test_parse_extra_api_keys_empty_string_returns_empty_list():
+    assert _parse_extra_api_keys("") == []
 
 
 def test_send_notification_raises_on_http_error():

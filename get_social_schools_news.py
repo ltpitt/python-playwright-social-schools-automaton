@@ -351,11 +351,7 @@ def _get_article_id(article):
     return article_id
 
 
-def _get_article_url(article_id):
-    return f"https://app.socialschools.eu/home#{article_id}"
-
-
-def render_digest_notification(data: Digest, article_url=None, failed_attachments=None):
+def render_digest_notification(data: Digest, failed_attachments=None):
     sections = []
 
     tldr = data.tldr.strip()
@@ -371,20 +367,8 @@ def render_digest_notification(data: Digest, article_url=None, failed_attachment
     if data.key_dates:
         sections.append("\n".join(data.key_dates))
 
-    attach_lines = []
-    for fname in data.attachment_references:
-        if article_url:
-            attach_lines.append(f"\U0001f4ce {fname} \u2014 {article_url}")
-        else:
-            attach_lines.append(f"\U0001f4ce {fname}")
     if failed_attachments:
-        for fname in failed_attachments:
-            warning = f"\u26a0 Could not read \u201c{fname}\u201d \u2014 open the original post for complete info"
-            if article_url:
-                warning += f": {article_url}"
-            attach_lines.append(warning)
-    if attach_lines:
-        sections.append("\n".join(attach_lines))
+        sections.append("\u26a0 An attachment could not be read \u2014 check the original post for complete info")
 
     return "\n\n".join(sections)
 
@@ -580,11 +564,9 @@ def process_all_articles(playwright, browser, context, page):
                 logger.info(f"Processing new article: {article_id}")
 
             expand_full_text(article)
-            article_url = _get_article_url(article_id)
 
             try:
-                process_article_content(playwright, browser, context, article,
-                                        article_url=article_url)
+                process_article_content(playwright, browser, context, article)
                 if not FORCE_REPROCESS:
                     save_processed_article(article_id)
                     processed_ids.append(article_id)
@@ -612,7 +594,7 @@ def expand_full_text(article):
         raise
 
 
-def process_article_content(playwright, browser, context, article, article_url=None):
+def process_article_content(playwright, browser, context, article):
     body = article.query_selector("span[as='div']").inner_text()
     title = article.query_selector("h3").inner_text()
 
@@ -655,8 +637,7 @@ def process_article_content(playwright, browser, context, article, article_url=N
     failed_names = [a.filename for a in attachments if a.failed] or None
     send_notification(
         title=data.translated_title,
-        body=render_digest_notification(data, article_url=article_url,
-                                        failed_attachments=failed_names),
+        body=render_digest_notification(data, failed_attachments=failed_names),
     )
 
 

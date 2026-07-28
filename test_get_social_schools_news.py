@@ -32,7 +32,6 @@ from get_social_schools_news import (  # noqa: E402
     expand_full_text,
     _check_copilot_available,
     _get_article_id,
-    _get_article_url,
     _COPILOT_TOOL_FREE_ARGS,
     _dict_to_digest,
 )
@@ -480,7 +479,7 @@ def test_render_digest_notification_tldr_fallback():
 
 
 def test_render_digest_notification_with_attachments():
-    """Test rendering shows filename with paperclip when no article_url provided"""
+    """Test rendering shows no filename lines for successful attachments"""
     data = Digest(
         translated_title="Trip Form",
         tldr="",
@@ -489,26 +488,11 @@ def test_render_digest_notification_with_attachments():
         attachment_references=["form.pdf"],
     )
     result = render_digest_notification(data)
-    assert result == "Action Items:\n\u25b8 15 Aug - sign form\n\n\U0001f4ce form.pdf"
-
-
-def test_render_digest_notification_with_article_url():
-    """Test rendering shows filename and post link when article_url is given"""
-    data = Digest(
-        translated_title="Trip Form",
-        tldr="",
-        action_items=["15 Aug - sign form"],
-        key_dates=[],
-        attachment_references=["form.pdf"],
-    )
-    result = render_digest_notification(
-        data, article_url="https://app.socialschools.eu/home#post_123"
-    )
-    assert result == "Action Items:\n\u25b8 15 Aug - sign form\n\n\U0001f4ce form.pdf \u2014 https://app.socialschools.eu/home#post_123"
+    assert result == "Action Items:\n\u25b8 15 Aug - sign form"
 
 
 def test_render_digest_notification_with_failed_attachments():
-    """Test that failed attachments appear as warning lines with article URL"""
+    """Test that failed attachments appear as a generic warning without filename or URL"""
     data = Digest(
         translated_title="Trip Form",
         tldr="",
@@ -518,12 +502,11 @@ def test_render_digest_notification_with_failed_attachments():
     )
     result = render_digest_notification(
         data,
-        article_url="https://app.socialschools.eu/home#123",
         failed_attachments=["broken.pdf"],
     )
     assert "\u26a0" in result
-    assert "broken.pdf" in result
-    assert "https://app.socialschools.eu/home#123" in result
+    assert "broken.pdf" not in result
+    assert "socialschools" not in result
 
 
 # =============================================================================
@@ -794,8 +777,7 @@ def test_process_all_articles_new_article(mock_playwright):
         mock_load.assert_called()
         mock_expand.assert_called_once_with(article)
         mock_process.assert_called_once_with(
-            playwright, browser, context, article,
-            article_url="https://app.socialschools.eu/home#test_article_id"
+            playwright, browser, context, article
         )
         mock_save.assert_called_once_with("test_article_id")
 
@@ -1027,7 +1009,7 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
         )
         mock_notify.assert_called_once_with(
             title="Translated Title",
-            body="Action Items:\n\u25b8 15 Aug - action\n\n\U0001f4ce doc.pdf",
+            body="Action Items:\n\u25b8 15 Aug - action",
         )
 
 

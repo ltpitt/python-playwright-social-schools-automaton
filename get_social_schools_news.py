@@ -1,4 +1,7 @@
+import argparse
 import os
+import re
+import subprocess
 import pycurl
 import logging
 import traceback
@@ -15,12 +18,47 @@ import configparser
 import tempfile
 
 
+def resolve_browser_executable_path():
+    env_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+    candidates = [
+        env_path,
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
 @dataclass
 class Config:
     SCRAPED_WEBSITE_USER: str
     SCRAPED_WEBSITE_PASSWORD: str
     PUSHBULLET_API_KEY: str
     TRANSLATION_LANGUAGE: str = "en"
+    DIGEST_ENABLED: bool = True
+
+
+@dataclass
+class Digest:
+    translated_title: str
+    tldr: str
+    action_items: list
+    key_dates: list
+    attachment_references: list
+
+
+@dataclass
+class Attachment:
+    filename: str
+    url: str
+    filetype: str   # "pdf" or "docx"
+    text: str
+    failed: bool = False
 
 
 def load_config() -> Config:
@@ -33,11 +71,13 @@ def load_config() -> Config:
         SCRAPED_WEBSITE_USER=config['DEFAULT']['SCRAPED_WEBSITE_USER'],
         SCRAPED_WEBSITE_PASSWORD=config['DEFAULT']['SCRAPED_WEBSITE_PASSWORD'],
         PUSHBULLET_API_KEY=config['DEFAULT']['PUSHBULLET_API_KEY'],
-        TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en')
+        TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en'),
+        DIGEST_ENABLED=config['DEFAULT'].get('DIGEST_ENABLED', 'true').strip().lower() == 'true',
     )
 
 
 config = None
+FORCE_REPROCESS = False
 
 
 def get_config() -> Config:
@@ -51,14 +91,40 @@ logging.basicConfig(
     level=logging.DEBUG,  # Changed to DEBUG for more detailed logging
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        # Uncomment the following line to save logs to a file
-        # logging.FileHandler("app.log", mode='a', encoding='utf-8'),
+        logging.FileHandler("run_report.txt", mode='w', encoding='utf-8'),
         logging.StreamHandler()
     ],
 )
 logger = logging.getLogger(__name__)
 
 PROCESSED_ARTICLES_FILE = "processed_articles.json"
+
+DIGEST_PROMPT_TEMPLATE = (
+    "You are writing a brief for a busy parent. Turn the Dutch school message "
+    "below into a structured JSON object.\n\n"
+    "Respond with ONLY a valid JSON object. No markdown fences, no explanation.\n\n"
+    "Required structure:\n"
+    "{{\n"
+    "  \"translated_title\": \"<article title in {language}>\",\n"
+    "  \"tldr\": \"<1-3 sentence summary in {language}, empty string if "
+    "action_items and key_dates cover everything>\",\n"
+    "  \"action_items\": [\"<deadline first - what parent must do>\"],\n"
+    "  \"key_dates\": [\"<date - event or closure>\"],\n"
+    "  \"attachment_references\": [\"<filename>\"]\n"
+    "}}\n\n"
+    "Rules:\n"
+    "- action_items and key_dates are empty arrays [] if none exist.\n"
+    "- Each action item: '15 Aug - sign the trip form'\n"
+    "- Each key date: '16 Jul - studiedag, no school'\n"
+    "- All text values in {language}.\n"
+    "- Output ONLY the JSON object, nothing else.\n\n"
+    "--- MESSAGE START ---\n"
+    "Title: {title}\n\n"
+    "{body}{attachments}\n"
+    "--- MESSAGE END ---"
+)
+
+REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "action_items", "key_dates", "attachment_references"}
 
 
 def load_processed_articles():
@@ -100,6 +166,46 @@ def download_pdf(url, output_path):
     logger.info(f"PDF downloaded and saved to {output_path}")
 
 
+def _download_pdf(url, output_path, browser_context=None):
+    """Download a PDF. Uses the authenticated Playwright session when available."""
+    if browser_context is not None:
+        logger.info(f"Downloading PDF from {url} (authenticated session)")
+        resp = browser_context.request.get(url)
+        if not resp.ok:
+            raise IOError(f"Authenticated PDF download failed ({resp.status}): {url}")
+        with open(output_path, "wb") as f:
+            f.write(resp.body())
+        logger.info(f"PDF downloaded to {output_path}")
+        return
+    logger.info(f"Downloading PDF from {url}")
+    response = requests.get(url, timeout=30, stream=True)
+    response.raise_for_status()
+    with open(output_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    logger.info(f"PDF downloaded to {output_path}")
+
+
+def _download_docx(url, output_path, browser_context=None):
+    """Download a DOCX. Uses the authenticated Playwright session when available."""
+    if browser_context is not None:
+        logger.info(f"Downloading DOCX from {url} (authenticated session)")
+        resp = browser_context.request.get(url)
+        if not resp.ok:
+            raise IOError(f"Authenticated DOCX download failed ({resp.status}): {url}")
+        with open(output_path, "wb") as f:
+            f.write(resp.body())
+        logger.info(f"DOCX downloaded to {output_path}")
+        return
+    logger.info(f"Downloading DOCX from {url}")
+    response = requests.get(url, timeout=30, stream=True)
+    response.raise_for_status()
+    with open(output_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    logger.info(f"DOCX downloaded to {output_path}")
+
+
 def extract_text(pdf_path):
     logger.info(f"Extracting text from PDF {pdf_path}")
     doc = fitz.open(pdf_path)
@@ -124,43 +230,221 @@ def translate(text, src="nl", dest=None, chunk_size=4900):
 def send_notification(title, body, api_key=None):
     if api_key is None:
         api_key = get_config().PUSHBULLET_API_KEY
+    logger.info(f"Sending Pushbullet notification with title: {title}")
+    logger.debug(f"Notification body:\n{body}")
+    params = {"type": "note", "title": title, "body": body}
+    response = requests.post(
+        "https://api.pushbullet.com/v2/pushes",
+        data=json.dumps(params),
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        },
+    )
+    response.raise_for_status()
+    logger.info("Pushbullet notification sent")
+
+
+def _check_copilot_available():
+    """Fail fast if the Copilot CLI is not reachable before processing any Article."""
     try:
-        logger.info(f"Sending Pushbullet notification with title: {title}")
-        params = {"type": "note", "title": title, "body": body}
-        requests.post(
-            "https://api.pushbullet.com/v2/pushes",
-            data=json.dumps(params),
-            headers={
-                "Authorization": "Bearer " + api_key,
-                "Content-Type": "application/json",
-            },
+        result = subprocess.run(
+            ["copilot", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
-        logger.info("Pushbullet notification sent")
-    except Exception as e:
-        logger.error(f"Error sending Pushbullet notification: {e}")
+    except FileNotFoundError:
+        raise RuntimeError("Copilot CLI not found. Ensure 'copilot' is in PATH.")
+    if result.returncode != 0:
+        raise RuntimeError(f"Copilot CLI health check failed (code {result.returncode})")
+
+
+# Per ADR 0001: non-interactive invocation via -p flag.
+# Per ADR 0002: the -p flag enforces no tool access. Never add --tool flags to this tuple.
+_COPILOT_TOOL_FREE_ARGS = ("copilot", "--no-color")
+
+# ADR 0002 guard: fail at import time if tool-access flags drift into this constant.
+assert not any("--tool" in arg for arg in _COPILOT_TOOL_FREE_ARGS), (
+    "ADR 0002 violation: _COPILOT_TOOL_FREE_ARGS must not contain --tool flags"
+)
+
+
+def _run_copilot(prompt):
+    try:
+        result = subprocess.run(
+            [*_COPILOT_TOOL_FREE_ARGS, "-p", prompt],
+            # Note: --no-color already in _COPILOT_TOOL_FREE_ARGS; -p disables tool access (ADR 0002)
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("Copilot CLI not found. Ensure 'copilot' is in PATH.")
+    if result.returncode != 0:
+        logger.error(f"Copilot CLI stderr:\n{result.stderr}")
+        raise RuntimeError(f"Copilot CLI returned code {result.returncode}")
+    return result.stdout.strip()
+
+
+def _extract_json(text):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        return json.loads(match.group(0))
+    raise ValueError("No valid JSON found in response")
+
+
+def _dict_to_digest(data: dict) -> Digest:
+    """Validate a raw JSON dict and convert it to a typed Digest. Raises ValueError on bad shape."""
+    missing = REQUIRED_DIGEST_FIELDS - set(data.keys())
+    if missing:
+        raise ValueError(f"Missing required fields: {missing}")
+    if not isinstance(data.get("translated_title"), str) or not data["translated_title"].strip():
+        raise ValueError("'translated_title' must be a non-empty string")
+    if not isinstance(data.get("tldr"), str):
+        raise ValueError("'tldr' must be a string")
+    for field in ("action_items", "key_dates", "attachment_references"):
+        if not isinstance(data[field], list):
+            raise ValueError(f"Field '{field}' must be a list")
+    return Digest(
+        translated_title=data["translated_title"],
+        tldr=data["tldr"],
+        action_items=list(dict.fromkeys(data["action_items"])),
+        key_dates=list(dict.fromkeys(data["key_dates"])),
+        attachment_references=data["attachment_references"],
+    )
+
+
+def _get_article_id(article):
+    article_id = article.get_attribute("data-id") or article.get_attribute("id")
+    if not article_id:
+        logger.debug("No article ID attribute, generating from title and timestamp")
+        title_el = article.query_selector("h3")
+        title = title_el.inner_text() if title_el else "unknown"
+        timestamp_el = article.query_selector("time")
+        timestamp = (timestamp_el.get_attribute("datetime")
+                     if timestamp_el else datetime.now().isoformat())
+        article_id = f"{title}_{timestamp}"
+        logger.info(f"Generated article ID: {article_id}")
+    return article_id
+
+
+def _get_article_url(article_id):
+    return f"https://app.socialschools.eu/home#{article_id}"
+
+
+def render_digest_notification(data: Digest, article_url=None, failed_attachments=None):
+    sections = []
+
+    tldr = data.tldr.strip()
+    if tldr:
+        sections.append(tldr)
+
+    if data.action_items:
+        action_block = "Action Items:\n" + "\n".join(f"\u25b8 {item}" for item in data.action_items)
+        sections.append(action_block)
+    else:
+        sections.append("No action needed")
+
+    if data.key_dates:
+        sections.append("\n".join(data.key_dates))
+
+    attach_lines = []
+    for fname in data.attachment_references:
+        if article_url:
+            attach_lines.append(f"\U0001f4ce {fname} \u2014 {article_url}")
+        else:
+            attach_lines.append(f"\U0001f4ce {fname}")
+    if failed_attachments:
+        for fname in failed_attachments:
+            warning = f"\u26a0 Could not read \u201c{fname}\u201d \u2014 open the original post for complete info"
+            if article_url:
+                warning += f": {article_url}"
+            attach_lines.append(warning)
+    if attach_lines:
+        sections.append("\n".join(attach_lines))
+
+    return "\n\n".join(sections)
+
+
+def generate_digest(title, body, attachments):
+    language = get_config().TRANSLATION_LANGUAGE
+    attachment_text = ""
+    if attachments:
+        parts = [f"\n\n[Attachment: {a.filename}]\n{a.text}" for a in attachments if not a.failed]
+        failed_parts = [f"\n\n[Attachment: {a.filename} \u2014 could not be extracted]" for a in attachments if a.failed]
+        attachment_text = "".join(parts + failed_parts)
+
+    prompt = DIGEST_PROMPT_TEMPLATE.format(
+        language=language,
+        title=title,
+        body=body,
+        attachments=attachment_text,
+    )
+
+    logger.info("Generating Digest via Copilot CLI")
+    raw = _run_copilot(prompt)
+
+    try:
+        digest = _dict_to_digest(_extract_json(raw))
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.warning(f"Digest response invalid ({e}), retrying once")
+        retry_prompt = (
+            "The previous response was not valid JSON or was missing required fields. "
+            "Respond with ONLY this JSON structure (no markdown, no explanation):\n"
+            '{\n  "translated_title": "...",\n  "tldr": "...",\n'
+            '  "action_items": [...],\n  "key_dates": [...],\n'
+            '  "attachment_references": [...]\n}\n\n'
+            f"Previous invalid response:\n{raw}\n\n"
+            f"Original prompt:\n{prompt}"
+        )
+        raw = _run_copilot(retry_prompt)
+        try:
+            digest = _dict_to_digest(_extract_json(raw))
+        except (ValueError, json.JSONDecodeError) as e2:
+            logger.warning(f"Digest retry also invalid ({e2}), using safe fallback")
+            digest = Digest(
+                translated_title=title,
+                tldr="(Could not generate summary \u2014 open the original post for details)",
+                action_items=[],
+                key_dates=[],
+                attachment_references=[],
+            )
+
+    logger.info("Digest validated successfully")
+
+    # Validate attachment_references against all known filenames (including failed extractions)
+    all_names = {a.filename for a in attachments}
+    hallucinated = [ref for ref in digest.attachment_references if ref not in all_names]
+    if hallucinated:
+        logger.warning(f"Digest contained hallucinated attachment references (filtered): {hallucinated}")
+    digest.attachment_references = [ref for ref in digest.attachment_references if ref in all_names]
+
+    return digest
 
 
 def process_pdf_links(playwright, browser, context, pdf_links):
+    attachments = []
     with tempfile.TemporaryDirectory() as temp_dir:
         for link in pdf_links:
             pdf_url = link.get_attribute("href")
             pdf_filename = pdf_url.split("/")[-1].split("?")[0]
             pdf_path = os.path.join(temp_dir, pdf_filename)
-
-            download_pdf(pdf_url, pdf_path)
-            text = extract_text(pdf_path)
-
-            send_notification(
-                title=f"Original PDF: {pdf_filename}",
-                body=text,
-            )
-
-            translated_text = translate(text)
-
-            send_notification(
-                title=f"Translated PDF: {pdf_filename}",
-                body=translated_text,
-            )
+            try:
+                _download_pdf(pdf_url, pdf_path, browser_context=context)
+                text = extract_text(pdf_path)
+                attachments.append(Attachment(filename=pdf_filename, url=pdf_url, filetype="pdf", text=text))
+            except Exception as e:
+                logger.error(f"Failed to process PDF '{pdf_filename}': {e}")
+                attachments.append(Attachment(filename=pdf_filename, url=pdf_url, filetype="pdf", text="", failed=True))
+    return attachments
 
 
 def extract_text_from_docx(docx_path):
@@ -174,42 +458,42 @@ def extract_text_from_docx(docx_path):
 
 
 def process_docx_links(playwright, browser, context, docx_links):
+    attachments = []
     with tempfile.TemporaryDirectory() as temp_dir:
         for link in docx_links:
             docx_url = link.get_attribute("href")
             docx_filename = docx_url.split("/")[-1].split("?")[0]
             docx_path = os.path.join(temp_dir, docx_filename)
-
-            download_pdf(docx_url, docx_path)
-            text = extract_text_from_docx(docx_path)
-
-            send_notification(
-                title=f"Original Word Document: {docx_filename}",
-                body=text,
-            )
-
-            translated_text = translate(text)
-
-            send_notification(
-                title=f"Translated Word Document: {docx_filename}",
-                body=translated_text,
-            )
+            try:
+                _download_docx(docx_url, docx_path, browser_context=context)
+                text = extract_text_from_docx(docx_path)
+                attachments.append(Attachment(filename=docx_filename, url=docx_url, filetype="docx", text=text))
+            except Exception as e:
+                logger.error(f"Failed to process DOCX '{docx_filename}': {e}")
+                attachments.append(Attachment(filename=docx_filename, url=docx_url, filetype="docx", text="", failed=True))
+    return attachments
 
 
 def run(playwright):
     try:
-        # Use system browser due to Playwright download issues
-        browser = playwright.chromium.launch(
-            headless=True,
-            executable_path='/usr/bin/chromium-browser'
-        )
+        launch_options = {"headless": True}
+        executable_path = resolve_browser_executable_path()
+        if executable_path:
+            launch_options["executable_path"] = executable_path
+            logger.info(f"Using browser executable: {executable_path}")
+        else:
+            logger.info("No system browser executable found, using Playwright default Chromium")
+
+        browser = playwright.chromium.launch(**launch_options)
         context = browser.new_context()
         page = context.new_page()
 
         login_to_website(page)
 
         if "home" in page.url:
-            process_first_article(playwright, browser, context, page)
+            if get_config().DIGEST_ENABLED:
+                _check_copilot_available()
+            process_all_articles(playwright, browser, context, page)
         else:
             raise Exception("Login failed - URL does not contain 'home'")
 
@@ -247,7 +531,7 @@ def login_to_website(page):
         raise
 
 
-def process_first_article(playwright, browser, context, page):
+def process_all_articles(playwright, browser, context, page):
     try:
         logger.debug("Looking for feed element")
         feed = page.query_selector("div[role='feed']")
@@ -255,44 +539,46 @@ def process_first_article(playwright, browser, context, page):
             logger.error("Feed element not found")
             raise Exception("Feed element not found")
         logger.debug("Feed element found")
-        logger.debug("Looking for first article")
-        first_article = feed.query_selector("div[role='article']")
-        # The following code can be used to get a specific article for debugging purposes
-        # all_articles = feed.query_selector_all("div[role='article']")
-        # first_article = all_articles[x]
-        if first_article:
-            title = first_article.query_selector("h3").inner_text()
-            logger.info(f"Found article: {title}")
-        else:
-            logger.warning("No article found in feed")
-        if not first_article:
-            logger.error("No article found")
-            raise Exception("No article found")
-        logger.debug("First article found")
 
-        article_id = first_article.get_attribute("data-id") or first_article.get_attribute("id")
-        if not article_id:
-            logger.debug("No article ID found, generating from title and timestamp")
-            title = first_article.query_selector("h3").inner_text()
-            timestamp_element = first_article.query_selector("time")
-            timestamp = (timestamp_element.get_attribute("datetime")
-                         if timestamp_element else datetime.now().isoformat())
-            article_id = f"{title}_{timestamp}"
-            logger.info(f"Generated article ID: {article_id}")
-        else:
-            logger.info(f"Found article ID: {article_id}")
-
-        if not save_processed_article(article_id):
-            logger.info(f"Article {article_id} was already processed, skipping...")
+        articles = feed.query_selector_all("div[role='article']")
+        if not articles:
+            logger.warning("No articles found in feed")
             return
-        logger.info(f"Processing new article: {article_id}")
+        logger.info(f"Found {len(articles)} article(s) in feed")
 
-        expand_full_text(first_article)
+        processed_ids = load_processed_articles()
 
-        process_article_content(playwright, browser, context, first_article)
+        for article in articles:
+            article_id = _get_article_id(article)
+            title_el = article.query_selector("h3")
+            title = title_el.inner_text() if title_el else "(no title)"
+            logger.info(f"Checking article: {title} [{article_id}]")
+
+            if not FORCE_REPROCESS and article_id in processed_ids:
+                logger.info(f"Article {article_id} already processed, skipping")
+                continue
+
+            if FORCE_REPROCESS:
+                logger.info(f"Force mode active: processing article {article_id} without updating state")
+            else:
+                logger.info(f"Processing new article: {article_id}")
+
+            expand_full_text(article)
+            article_url = _get_article_url(article_id)
+
+            try:
+                process_article_content(playwright, browser, context, article,
+                                        article_url=article_url)
+                if not FORCE_REPROCESS:
+                    save_processed_article(article_id)
+                    processed_ids.append(article_id)
+            except Exception as e:
+                logger.error(f"Error processing article {article_id}: {str(e)}")
+                logger.error(f"Stack trace: {traceback.format_exc()}")
+                # Continue to next article; leave unmarked for retry
 
     except Exception as e:
-        logger.error(f"Error processing first article: {str(e)}")
+        logger.error(f"Error in process_all_articles: {str(e)}")
         logger.error(f"Stack trace: {traceback.format_exc()}")
         raise
 
@@ -310,33 +596,63 @@ def expand_full_text(article):
         raise
 
 
-def process_article_content(playwright, browser, context, article):
+def process_article_content(playwright, browser, context, article, article_url=None):
     body = article.query_selector("span[as='div']").inner_text()
     title = article.query_selector("h3").inner_text()
 
-    send_notification(
-        title=title,
-        body=body,
-    )
+    if not get_config().DIGEST_ENABLED:
+        # Translation-only mode: no LLM, no attachment extraction
+        logger.info("Digest disabled — sending translated content directly")
+        send_notification(title=translate(title), body=translate(body))
+        return
 
-    send_notification(
-        title=translate(title),
-        body=translate(body),
-    )
+    attachments = []  # list[Attachment] — includes failed extractions
+
+    # Diagnostic: log all article hrefs for runtime observability of attachment formats
+    all_links = article.query_selector_all("a[href]")
+    if all_links:
+        hrefs = [link.get_attribute("href") for link in all_links if link.get_attribute("href")]
+        if hrefs:
+            logger.debug(f"Article links ({len(hrefs)}): {[h.split('?')[0] for h in hrefs]}")
 
     pdf_links = article.query_selector_all("a[href*='.pdf']")
-    if len(pdf_links) > 0:
-        process_pdf_links(playwright, browser, context, pdf_links)
+    if pdf_links:
+        attachments.extend(process_pdf_links(playwright, browser, context, pdf_links))
 
     docx_links = article.query_selector_all("a[href*='.docx']")
-    if len(docx_links) > 0:
-        process_docx_links(playwright, browser, context, docx_links)
+    if docx_links:
+        attachments.extend(process_docx_links(playwright, browser, context, docx_links))
 
-    if len(pdf_links) == 0 and len(docx_links) == 0:
-        logger.info("No PDFs or Word documents available, sent article body in notification.")
+    if not pdf_links and not docx_links:
+        logger.info("No PDFs or Word documents found in article.")
+
+    try:
+        data = generate_digest(title, body, attachments)
+    except RuntimeError as e:
+        logger.error(f"Digest generation failed: {e}")
+        send_notification(
+            title="Social Schools update",
+            body="Could not generate Digest for the latest article. Will retry on next run.",
+        )
+        raise
+
+    failed_names = [a.filename for a in attachments if a.failed] or None
+    send_notification(
+        title=data.translated_title,
+        body=render_digest_notification(data, article_url=article_url,
+                                        failed_attachments=failed_names),
+    )
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Social Schools news automation")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Process the first article even if already seen, without updating state",
+    )
+    args = parser.parse_args()
+    FORCE_REPROCESS = args.force
     try:
         with sync_playwright() as playwright:
             run(playwright)

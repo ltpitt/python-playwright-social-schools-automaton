@@ -9,6 +9,17 @@
 # Social Schools Automaton
 > A Python script to automate downloading, translating, and notifying about new content from the social school website!
 
+## Notification modes
+
+The tool supports two modes, both treated as first-class:
+
+| Mode | Config | What you get | Requirements |
+|---|---|---|---|
+| **Digest** (default) | `DIGEST_ENABLED = true` | Structured brief: TL;DR, action items, key dates, attachment link | GitHub Copilot CLI |
+| **Translation** | `DIGEST_ENABLED = false` | Google-translated article title + body | None beyond Python deps |
+
+Set `DIGEST_ENABLED = false` in `config.ini` if you don't have Copilot access or prefer a simpler, cost-free setup. You'll still get every article translated and delivered to your phone.
+
 ## Why this exists
 
 Hey there, awesome parents! 🎉

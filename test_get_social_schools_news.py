@@ -1,3 +1,4 @@
+import json
 import pytest
 import os
 import sys
@@ -12,8 +13,12 @@ from get_social_schools_news import (  # noqa: E402
     save_processed_article,
     translate,
     send_notification,
+    generate_digest,
+    render_digest_notification,
     process_article_content,
     Config,
+    Digest,
+    Attachment,
     load_config,
     get_config,
     download_pdf,
@@ -23,8 +28,13 @@ from get_social_schools_news import (  # noqa: E402
     process_docx_links,
     run,
     login_to_website,
-    process_first_article,
-    expand_full_text
+    process_all_articles,
+    expand_full_text,
+    _check_copilot_available,
+    _get_article_id,
+    _get_article_url,
+    _COPILOT_TOOL_FREE_ARGS,
+    _dict_to_digest,
 )
 
 
@@ -35,11 +45,15 @@ def mock_config():
         SCRAPED_WEBSITE_USER="test_user@example.com",
         SCRAPED_WEBSITE_PASSWORD="test_password",
         PUSHBULLET_API_KEY="test_api_key",
-        TRANSLATION_LANGUAGE="en"
+        TRANSLATION_LANGUAGE="en",
+        DIGEST_ENABLED=True,
     )
+    import get_social_schools_news
+    get_social_schools_news.config = None  # reset cached config before each test
     with patch('get_social_schools_news.load_config',
                return_value=test_config):
         yield test_config
+    get_social_schools_news.config = None  # clean up after test
 
 
 @pytest.fixture
@@ -94,6 +108,17 @@ def test_send_notification(mock_config):
         mock_post.assert_called_once()
 
 
+def test_send_notification_raises_on_http_error():
+    """Test send_notification propagates HTTP errors so articles stay unmarked for retry"""
+    import requests as req_lib
+    with patch('requests.post') as mock_post:
+        mock_response = Mock()
+        mock_response.raise_for_status.side_effect = req_lib.exceptions.HTTPError("401 Unauthorized")
+        mock_post.return_value = mock_response
+        with pytest.raises(req_lib.exceptions.HTTPError):
+            send_notification("Test", "Body", "bad_key")
+
+
 def test_process_article_content(mock_playwright, mock_config):
     playwright, browser, context, page = mock_playwright
 
@@ -104,14 +129,19 @@ def test_process_article_content(mock_playwright, mock_config):
     article.query_selector_all.return_value = []
 
     with patch('get_social_schools_news.send_notification') as mock_notify, \
-         patch('get_social_schools_news.translate') as mock_translate:
-        mock_translate.return_value = "Translated Content"
+         patch('get_social_schools_news.generate_digest') as mock_digest:
+        mock_digest.return_value = Digest(
+            translated_title="Translated Title",
+            tldr="Short summary",
+            action_items=[],
+            key_dates=[],
+            attachment_references=[],
+        )
 
         process_article_content(playwright, browser, context, article)
 
-        # Verify notifications were sent
-        assert mock_notify.call_count == 2
-        assert mock_translate.call_count == 2
+        mock_digest.assert_called_once()
+        mock_notify.assert_called_once_with(title="Translated Title", body="Short summary\n\nNo action needed")
 
 
 def test_load_processed_articles_error(tmp_path):
@@ -140,9 +170,10 @@ def test_translate_error(mock_config):
 
 
 def test_send_notification_error(mock_config):
+    """Test send_notification propagates network errors for retry-on-next-run"""
     with patch('requests.post', side_effect=Exception("Network error")):
-        # Should not raise exception
-        send_notification("Test Title", "Test Body", "test_key")
+        with pytest.raises(Exception, match="Network error"):
+            send_notification("Test Title", "Test Body", "test_key")
 
 
 def test_process_article_content_error(mock_playwright, mock_config):
@@ -167,14 +198,19 @@ def test_process_article_content_missing_attachments(mock_playwright,
     article.query_selector_all.return_value = []
 
     with patch('get_social_schools_news.send_notification') as mock_notify, \
-         patch('get_social_schools_news.translate') as mock_translate:
-        mock_translate.return_value = "Translated Content"
+         patch('get_social_schools_news.generate_digest') as mock_digest:
+        mock_digest.return_value = Digest(
+            translated_title="Translated Title",
+            tldr="Short summary",
+            action_items=[],
+            key_dates=[],
+            attachment_references=[],
+        )
 
         process_article_content(playwright, browser, context, article)
 
-        # Verify only article content notifications were sent
-        assert mock_notify.call_count == 2
-        assert mock_translate.call_count == 2
+        mock_digest.assert_called_once_with("Test Content", "Test Content", [])
+        mock_notify.assert_called_once_with(title="Translated Title", body="Short summary\n\nNo action needed")
 
 
 # =============================================================================
@@ -253,6 +289,244 @@ def test_get_config_caching():
 
 
 # =============================================================================
+# DIGEST GENERATION TESTS
+# =============================================================================
+
+
+def test_generate_digest(mock_config):
+    """Test Digest generation via Copilot CLI subprocess call returns dict"""
+    import subprocess
+    digest_data = {
+        "translated_title": "School Trip",
+        "tldr": "Children need gym shoes",
+        "action_items": ["15 Aug - bring gym shoes"],
+        "key_dates": ["16 Aug - school closed"],
+        "attachment_references": [],
+    }
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps(digest_data)
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        result = generate_digest("School Trip", "Body text", [])
+
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args
+        cmd = call_args[0][0]
+        assert cmd[0] == "copilot"
+        assert "-p" in cmd
+        prompt_idx = cmd.index("-p") + 1
+        assert "School Trip" in cmd[prompt_idx]
+        assert "Body text" in cmd[prompt_idx]
+        assert "--no-color" in cmd
+        assert isinstance(result, Digest)
+        assert result.translated_title == "School Trip"
+        assert result.action_items == ["15 Aug - bring gym shoes"]
+
+
+def test_generate_digest_with_attachments(mock_config):
+    """Test Digest generation includes attachment text in prompt"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps({
+        "translated_title": "Form Required",
+        "tldr": "",
+        "action_items": ["15 Aug - sign and return the form"],
+        "key_dates": [],
+        "attachment_references": ["form.pdf"],
+    })
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        generate_digest("Title", "Body", [Attachment(
+            filename="form.pdf", url="http://example.com/form.pdf",
+            filetype="pdf", text="Sign and return by 15 Aug",
+        )])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert "form.pdf" in prompt
+        assert "Sign and return by 15 Aug" in prompt
+
+
+def test_generate_digest_cli_not_found(mock_config):
+    """Test generate_digest raises RuntimeError when copilot CLI is missing"""
+    with patch('subprocess.run', side_effect=FileNotFoundError):
+        with pytest.raises(RuntimeError, match="Copilot CLI not found"):
+            generate_digest("Title", "Body", [])
+
+
+def test_generate_digest_cli_failure(mock_config):
+    """Test generate_digest raises RuntimeError on non-zero CLI exit"""
+    mock_result = Mock()
+    mock_result.returncode = 1
+    mock_result.stderr = "auth error"
+
+    with patch('subprocess.run', return_value=mock_result):
+        with pytest.raises(RuntimeError, match="Copilot CLI returned code 1"):
+            generate_digest("Title", "Body", [])
+
+
+def test_generate_digest_retry_on_invalid_json(mock_config):
+    """Test generate_digest retries once when response is not valid JSON"""
+    valid_json = json.dumps({
+        "translated_title": "Title",
+        "tldr": "Summary",
+        "action_items": [],
+        "key_dates": [],
+        "attachment_references": [],
+    })
+
+    invalid_result = Mock()
+    invalid_result.returncode = 0
+    invalid_result.stdout = "not valid json at all"
+
+    valid_result = Mock()
+    valid_result.returncode = 0
+    valid_result.stdout = valid_json
+
+    with patch('subprocess.run', side_effect=[invalid_result, valid_result]) as mock_run:
+        result = generate_digest("Title", "Body", [])
+
+        assert mock_run.call_count == 2
+        assert result.translated_title == "Title"
+
+
+def test_generate_digest_fallback_on_second_failure(mock_config):
+    """Test that two consecutive invalid CLI responses yield a safe fallback Digest"""
+    bad_result = Mock()
+    bad_result.returncode = 0
+    bad_result.stdout = "not valid json at all"
+
+    with patch('subprocess.run', return_value=bad_result) as mock_run:
+        result = generate_digest("School Trip", "Body text", [])
+
+        assert mock_run.call_count == 2
+        assert isinstance(result, Digest)
+        assert result.translated_title == "School Trip"
+        assert result.action_items == []
+        assert result.key_dates == []
+        assert result.attachment_references == []
+
+
+def test_copilot_command_has_no_tool_flags():
+    """ADR 0002 regression: Copilot invocation must never include tool-access flags"""
+    cmd = [*_COPILOT_TOOL_FREE_ARGS, "-p", "sample prompt"]
+    assert all("--tool" not in arg for arg in cmd), \
+        "ADR 0002: tool flags must not appear in _COPILOT_TOOL_FREE_ARGS"
+    assert "-p" in cmd, "Non-interactive flag -p must be present"
+    assert "--no-color" in cmd
+
+
+def test_generate_digest_includes_failed_attachment_in_prompt(mock_config):
+    """Test that failed attachments are named in the Copilot prompt as unreadable placeholders"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps({
+        "translated_title": "Title",
+        "tldr": "",
+        "action_items": [],
+        "key_dates": [],
+        "attachment_references": [],
+    })
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        generate_digest("Title", "Body", [Attachment(
+            filename="form.pdf", url="http://x/form.pdf",
+            filetype="pdf", text="", failed=True,
+        )])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert "form.pdf" in prompt
+        assert "could not be extracted" in prompt
+
+
+def test_dict_to_digest_deduplicates_action_items_and_key_dates():
+    """Test that duplicate action items and key dates are removed preserving insertion order"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "",
+        "action_items": ["15 Aug - sign form", "15 Aug - sign form", "25 Aug - attend"],
+        "key_dates": ["4 Jul - holiday", "4 Jul - holiday"],
+        "attachment_references": [],
+    }
+    digest = _dict_to_digest(data)
+    assert digest.action_items == ["15 Aug - sign form", "25 Aug - attend"]
+    assert digest.key_dates == ["4 Jul - holiday"]
+
+
+def test_render_digest_notification_with_items():
+    """Test rendering prefixes action items with bullet and appends key dates"""
+    data = Digest(
+        translated_title="School Event",
+        tldr="Summary of event.",
+        action_items=["15 Aug - bring gym shoes"],
+        key_dates=["16 Jul - studiedag, no school"],
+        attachment_references=[],
+    )
+    result = render_digest_notification(data)
+    assert result == "Summary of event.\n\nAction Items:\n\u25b8 15 Aug - bring gym shoes\n\n16 Jul - studiedag, no school"
+
+
+def test_render_digest_notification_tldr_fallback():
+    """Test rendering emits 'No action needed' when no items exist, with tldr shown"""
+    data = Digest(
+        translated_title="School Info",
+        tldr="The school will be closed for renovation.",
+        action_items=[],
+        key_dates=[],
+        attachment_references=[],
+    )
+    result = render_digest_notification(data)
+    assert result == "The school will be closed for renovation.\n\nNo action needed"
+
+
+def test_render_digest_notification_with_attachments():
+    """Test rendering shows filename with paperclip when no article_url provided"""
+    data = Digest(
+        translated_title="Trip Form",
+        tldr="",
+        action_items=["15 Aug - sign form"],
+        key_dates=[],
+        attachment_references=["form.pdf"],
+    )
+    result = render_digest_notification(data)
+    assert result == "Action Items:\n\u25b8 15 Aug - sign form\n\n\U0001f4ce form.pdf"
+
+
+def test_render_digest_notification_with_article_url():
+    """Test rendering shows filename and post link when article_url is given"""
+    data = Digest(
+        translated_title="Trip Form",
+        tldr="",
+        action_items=["15 Aug - sign form"],
+        key_dates=[],
+        attachment_references=["form.pdf"],
+    )
+    result = render_digest_notification(
+        data, article_url="https://app.socialschools.eu/home#post_123"
+    )
+    assert result == "Action Items:\n\u25b8 15 Aug - sign form\n\n\U0001f4ce form.pdf \u2014 https://app.socialschools.eu/home#post_123"
+
+
+def test_render_digest_notification_with_failed_attachments():
+    """Test that failed attachments appear as warning lines with article URL"""
+    data = Digest(
+        translated_title="Trip Form",
+        tldr="",
+        action_items=["15 Aug - sign form"],
+        key_dates=[],
+        attachment_references=[],
+    )
+    result = render_digest_notification(
+        data,
+        article_url="https://app.socialschools.eu/home#123",
+        failed_attachments=["broken.pdf"],
+    )
+    assert "\u26a0" in result
+    assert "broken.pdf" in result
+    assert "https://app.socialschools.eu/home#123" in result
+
+
+# =============================================================================
 # PDF PROCESSING TESTS
 # =============================================================================
 
@@ -300,7 +574,7 @@ def test_extract_text_from_pdf():
 
 
 def test_process_pdf_links():
-    """Test processing PDF links with notifications"""
+    """Test processing PDF links returns Attachment objects with no failures"""
     playwright, browser, context = Mock(), Mock(), Mock()
 
     # Mock PDF links
@@ -310,28 +584,50 @@ def test_process_pdf_links():
     mock_link2.get_attribute.return_value = "http://example.com/test2.pdf"
     pdf_links = [mock_link1, mock_link2]
 
-    with patch('get_social_schools_news.download_pdf') as mock_download, \
+    with patch('get_social_schools_news._download_pdf') as mock_download, \
          patch('get_social_schools_news.extract_text') as mock_extract, \
-         patch('get_social_schools_news.translate') as mock_translate, \
-         patch('get_social_schools_news.send_notification') as mock_notify, \
          patch('tempfile.TemporaryDirectory'):
 
         mock_extract.return_value = "PDF content"
-        mock_translate.return_value = "Translated PDF content"
 
-        process_pdf_links(playwright, browser, context, pdf_links)
+        attachments = process_pdf_links(playwright, browser, context, pdf_links)
 
-        # Should download and process both PDFs
         assert mock_download.call_count == 2
         assert mock_extract.call_count == 2
-        assert mock_translate.call_count == 2
-        assert mock_notify.call_count == 4  # 2 original + 2 translated
+        assert all(isinstance(a, Attachment) for a in attachments)
+        assert [a.filename for a in attachments] == ["test1.pdf", "test2.pdf"]
+        assert all(a.text == "PDF content" for a in attachments)
+        assert all(not a.failed for a in attachments)
+
+
+def test_process_pdf_links_partial_failure():
+    """Test that a failing PDF is recorded with failed=True without stopping other attachments"""
+    playwright, browser, context = Mock(), Mock(), Mock()
+
+    mock_link1 = Mock()
+    mock_link1.get_attribute.return_value = "http://example.com/ok.pdf"
+    mock_link2 = Mock()
+    mock_link2.get_attribute.return_value = "http://example.com/broken.pdf"
+    pdf_links = [mock_link1, mock_link2]
+
+    def download_side_effect(url, path, browser_context=None):
+        if "broken" in url:
+            raise Exception("404 Not Found")
+
+    with patch('get_social_schools_news._download_pdf', side_effect=download_side_effect), \
+         patch('get_social_schools_news.extract_text', return_value="OK content"), \
+         patch('tempfile.TemporaryDirectory'):
+        attachments = process_pdf_links(playwright, browser, context, pdf_links)
+
+    assert len(attachments) == 2
+    ok, broken = attachments
+    assert ok.filename == "ok.pdf" and not ok.failed and ok.text == "OK content"
+    assert broken.filename == "broken.pdf" and broken.failed
 
 
 # =============================================================================
 # DOCX PROCESSING TESTS
 # =============================================================================
-
 
 def test_extract_text_from_docx():
     """Test text extraction from Word document"""
@@ -352,30 +648,30 @@ def test_extract_text_from_docx():
 
 
 def test_process_docx_links():
-    """Test processing DOCX links with notifications"""
+    """Test processing DOCX links returns Attachment objects"""
     playwright, browser, context = Mock(), Mock(), Mock()
 
-    # Mock DOCX links
+    # Mock DOCX link
     mock_link = Mock()
     mock_link.get_attribute.return_value = "http://example.com/test.docx"
     docx_links = [mock_link]
 
-    with patch('get_social_schools_news.download_pdf') as mock_download, \
+    with patch('get_social_schools_news._download_docx') as mock_download, \
          patch('get_social_schools_news.extract_text_from_docx') as \
          mock_extract, \
-         patch('get_social_schools_news.translate') as mock_translate, \
-         patch('get_social_schools_news.send_notification') as mock_notify, \
          patch('tempfile.TemporaryDirectory'):
 
         mock_extract.return_value = "DOCX content"
-        mock_translate.return_value = "Translated DOCX content"
 
-        process_docx_links(playwright, browser, context, docx_links)
+        attachments = process_docx_links(playwright, browser, context, docx_links)
 
         mock_download.assert_called_once()
         mock_extract.assert_called_once()
-        mock_translate.assert_called_once()
-        assert mock_notify.call_count == 2  # Original + translated
+        assert len(attachments) == 1
+        assert isinstance(attachments[0], Attachment)
+        assert attachments[0].filename == "test.docx"
+        assert attachments[0].text == "DOCX content"
+        assert not attachments[0].failed
 
 
 # =============================================================================
@@ -471,85 +767,110 @@ def test_expand_full_text_no_button():
     article.wait_for_selector.assert_called_once_with("span[as='div']")
 
 
-def test_process_first_article_success(mock_playwright):
-    """Test successful processing of first article"""
+def test_process_all_articles_new_article(mock_playwright):
+    """Test that a new unseen article is processed and saved"""
     playwright, browser, context, page = mock_playwright
 
-    # Mock feed and article elements
     feed = Mock()
     article = Mock()
     title_element = Mock()
     title_element.inner_text.return_value = "Test Article Title"
-    time_element = Mock()
-    time_element.get_attribute.return_value = "2023-12-01T10:00:00Z"
-
-    feed.query_selector.return_value = article
-    article.query_selector.side_effect = lambda selector: {
-        "h3": title_element,
-        "time": time_element
-    }.get(selector)
-    article.get_attribute.return_value = "test_article_id"
 
     page.query_selector.return_value = feed
+    feed.query_selector_all.return_value = [article]
+    article.get_attribute.return_value = "test_article_id"
+    article.query_selector.side_effect = lambda selector: {
+        "h3": title_element,
+    }.get(selector)
 
-    with patch('get_social_schools_news.save_processed_article',
-               return_value=True) as mock_save, \
+    with patch('get_social_schools_news.load_processed_articles',
+               return_value=[]) as mock_load, \
+         patch('get_social_schools_news.save_processed_article') as mock_save, \
          patch('get_social_schools_news.expand_full_text') as mock_expand, \
-         patch('get_social_schools_news.process_article_content') as \
-         mock_process:
+         patch('get_social_schools_news.process_article_content') as mock_process:
 
-        process_first_article(playwright, browser, context, page)
+        process_all_articles(playwright, browser, context, page)
 
-        mock_save.assert_called_once_with("test_article_id")
+        mock_load.assert_called()
         mock_expand.assert_called_once_with(article)
-        mock_process.assert_called_once_with(playwright, browser, context,
-                                             article)
+        mock_process.assert_called_once_with(
+            playwright, browser, context, article,
+            article_url="https://app.socialschools.eu/home#test_article_id"
+        )
+        mock_save.assert_called_once_with("test_article_id")
 
 
-def test_process_first_article_feed_not_found(mock_playwright):
-    """Test process_first_article when feed element is not found"""
+def test_process_all_articles_feed_not_found(mock_playwright):
+    """Test process_all_articles raises when feed element is not found"""
     playwright, browser, context, page = mock_playwright
     page.query_selector.return_value = None
 
     with pytest.raises(Exception, match="Feed element not found"):
-        process_first_article(playwright, browser, context, page)
+        process_all_articles(playwright, browser, context, page)
 
 
-def test_process_first_article_no_article_found(mock_playwright):
-    """Test process_first_article when no article is found in feed"""
+def test_process_all_articles_no_articles(mock_playwright):
+    """Test process_all_articles returns quietly when feed is empty"""
     playwright, browser, context, page = mock_playwright
 
     feed = Mock()
-    feed.query_selector.return_value = None
+    feed.query_selector_all.return_value = []
     page.query_selector.return_value = feed
 
-    with pytest.raises(Exception, match="No article found"):
-        process_first_article(playwright, browser, context, page)
+    with patch('get_social_schools_news.process_article_content') as mock_process:
+        process_all_articles(playwright, browser, context, page)
+        mock_process.assert_not_called()
 
 
-def test_process_first_article_already_processed(mock_playwright):
-    """Test process_first_article when article is already processed"""
+def test_process_all_articles_skips_seen(mock_playwright):
+    """Test process_all_articles skips already-processed articles"""
     playwright, browser, context, page = mock_playwright
 
-    # Mock feed and article elements
     feed = Mock()
     article = Mock()
     title_element = Mock()
     title_element.inner_text.return_value = "Test Article Title"
-
-    feed.query_selector.return_value = article
     article.query_selector.return_value = title_element
     article.get_attribute.return_value = "processed_article_id"
 
     page.query_selector.return_value = feed
+    feed.query_selector_all.return_value = [article]
 
-    with patch('get_social_schools_news.save_processed_article',
-               return_value=False) as mock_save:
+    with patch('get_social_schools_news.load_processed_articles',
+               return_value=["processed_article_id"]), \
+         patch('get_social_schools_news.process_article_content') as mock_process:
 
-        process_first_article(playwright, browser, context, page)
+        process_all_articles(playwright, browser, context, page)
 
-        mock_save.assert_called_once_with("processed_article_id")
-        # Should return early without processing
+        mock_process.assert_not_called()
+
+
+def test_process_all_articles_continues_on_error(mock_playwright):
+    """Test that a per-article error doesn't stop processing subsequent articles"""
+    playwright, browser, context, page = mock_playwright
+
+    feed = Mock()
+    article1, article2 = Mock(), Mock()
+    title_el = Mock()
+    title_el.inner_text.return_value = "Title"
+    article1.get_attribute.return_value = "article_1"
+    article2.get_attribute.return_value = "article_2"
+    article1.query_selector.return_value = title_el
+    article2.query_selector.return_value = title_el
+
+    page.query_selector.return_value = feed
+    feed.query_selector_all.return_value = [article1, article2]
+
+    with patch('get_social_schools_news.load_processed_articles', return_value=[]), \
+         patch('get_social_schools_news.save_processed_article') as mock_save, \
+         patch('get_social_schools_news.expand_full_text'), \
+         patch('get_social_schools_news.process_article_content',
+               side_effect=[RuntimeError("Digest failed"), None]) as mock_process:
+
+        process_all_articles(playwright, browser, context, page)
+
+        assert mock_process.call_count == 2
+        mock_save.assert_called_once_with("article_2")  # article_1 failed, not saved
 
 
 def test_run_function_success(mock_playwright):
@@ -558,13 +879,14 @@ def test_run_function_success(mock_playwright):
     page.url = "https://app.socialschools.eu/home/dashboard"
 
     with patch('get_social_schools_news.login_to_website') as mock_login, \
-         patch('get_social_schools_news.process_first_article') as \
-         mock_process:
+         patch('get_social_schools_news.process_all_articles') as \
+         mock_process, \
+         patch('get_social_schools_news._check_copilot_available'):
 
         run(playwright)
 
         playwright.chromium.launch.assert_called_once_with(
-            headless=True, 
+            headless=True,
             executable_path='/usr/bin/chromium-browser'
         )
         browser.new_context.assert_called_once()
@@ -665,30 +987,120 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
     docx_link = Mock()
     article.query_selector_all.side_effect = lambda selector: {
         "a[href*='.pdf']": [pdf_link],
-        "a[href*='.docx']": [docx_link]
-    }[selector]
+        "a[href*='.docx']": [docx_link],
+    }.get(selector, [])
 
     with patch('get_social_schools_news.send_notification') as mock_notify, \
-         patch('get_social_schools_news.translate') as mock_translate, \
+         patch('get_social_schools_news.generate_digest') as mock_digest, \
          patch('get_social_schools_news.process_pdf_links') as mock_pdf, \
          patch('get_social_schools_news.process_docx_links') as mock_docx:
 
-        mock_translate.return_value = "Translated"
+        mock_digest.return_value = Digest(
+            translated_title="Translated Title",
+            tldr="",
+            action_items=["15 Aug - action"],
+            key_dates=[],
+            attachment_references=["doc.pdf"],
+        )
+        mock_pdf.return_value = [Attachment(
+            filename="doc.pdf", url="http://example.com/doc.pdf",
+            filetype="pdf", text="PDF text",
+        )]
+        mock_docx.return_value = [Attachment(
+            filename="doc.docx", url="http://example.com/doc.docx",
+            filetype="docx", text="DOCX text",
+        )]
 
         process_article_content(playwright, browser, context, article)
 
-        # Should send article notifications
-        assert mock_notify.call_count == 2
         # Should process both PDF and DOCX
         mock_pdf.assert_called_once_with(playwright, browser, context,
                                          [pdf_link])
         mock_docx.assert_called_once_with(playwright, browser, context,
                                           [docx_link])
+        mock_digest.assert_called_once_with(
+            "Test Title", "Test Body",
+            [
+                Attachment(filename="doc.pdf", url="http://example.com/doc.pdf", filetype="pdf", text="PDF text"),
+                Attachment(filename="doc.docx", url="http://example.com/doc.docx", filetype="docx", text="DOCX text"),
+            ]
+        )
+        mock_notify.assert_called_once_with(
+            title="Translated Title",
+            body="Action Items:\n\u25b8 15 Aug - action\n\n\U0001f4ce doc.pdf",
+        )
 
 
 # =============================================================================
 # ERROR HANDLING AND ROBUSTNESS TESTS
 # =============================================================================
+
+
+def test_process_article_content_digest_failure(mock_playwright, mock_config):
+    """Test that digest failure sends an operational notice and re-raises (leaving article unmarked)"""
+    playwright, browser, context, page = mock_playwright
+
+    article = Mock()
+    mock_query_selector = article.query_selector.return_value
+    mock_query_selector.inner_text.return_value = "Test Content"
+    article.query_selector_all.return_value = []
+
+    with patch('get_social_schools_news.send_notification') as mock_notify, \
+         patch('get_social_schools_news.generate_digest',
+               side_effect=RuntimeError("Copilot CLI returned code 1")):
+        with pytest.raises(RuntimeError):
+            process_article_content(playwright, browser, context, article)
+
+        mock_notify.assert_called_once_with(
+            title="Social Schools update",
+            body="Could not generate Digest for the latest article. Will retry on next run.",
+        )
+
+
+def test_process_article_content_digest_disabled(mock_playwright, mock_config):
+    """Test that DIGEST_ENABLED=false sends translated title+body without Copilot CLI"""
+    playwright, browser, context, page = mock_playwright
+
+    article = Mock()
+    mock_query_selector = article.query_selector.return_value
+    mock_query_selector.inner_text.return_value = "Dutch content"
+    article.query_selector_all.return_value = []
+
+    mock_config.DIGEST_ENABLED = False
+
+    with patch('get_social_schools_news.send_notification') as mock_notify, \
+         patch('get_social_schools_news.translate', return_value="Translated") as mock_translate, \
+         patch('get_social_schools_news.generate_digest') as mock_digest:
+
+        process_article_content(playwright, browser, context, article)
+
+        mock_digest.assert_not_called()
+        assert mock_translate.call_count == 2  # title + body
+        mock_notify.assert_called_once_with(title="Translated", body="Translated")
+
+
+def test_check_copilot_available_success():
+    """Test startup check passes when copilot responds with exit 0"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    with patch('subprocess.run', return_value=mock_result):
+        _check_copilot_available()  # should not raise
+
+
+def test_check_copilot_available_not_found():
+    """Test startup check raises RuntimeError when copilot is not in PATH"""
+    with patch('subprocess.run', side_effect=FileNotFoundError):
+        with pytest.raises(RuntimeError, match="Copilot CLI not found"):
+            _check_copilot_available()
+
+
+def test_check_copilot_available_failure():
+    """Test startup check raises RuntimeError on non-zero exit"""
+    mock_result = Mock()
+    mock_result.returncode = 1
+    with patch('subprocess.run', return_value=mock_result):
+        with pytest.raises(RuntimeError, match="health check failed"):
+            _check_copilot_available()
 
 
 def test_article_id_generation_fallback(mock_playwright):
@@ -702,23 +1114,21 @@ def test_article_id_generation_fallback(mock_playwright):
     time_element = Mock()
     time_element.get_attribute.return_value = "2023-12-01T10:00:00Z"
 
-    feed.query_selector.return_value = article
+    page.query_selector.return_value = feed
+    feed.query_selector_all.return_value = [article]
+    article.get_attribute.return_value = None  # No ID attributes
     article.query_selector.side_effect = lambda selector: {
         "h3": title_element,
-        "time": time_element
+        "time": time_element,
     }.get(selector)
-    article.get_attribute.return_value = None  # No ID attributes
-
-    page.query_selector.return_value = feed
 
     with patch('get_social_schools_news.save_processed_article',
                return_value=True) as mock_save, \
          patch('get_social_schools_news.expand_full_text'), \
          patch('get_social_schools_news.process_article_content'):
 
-        process_first_article(playwright, browser, context, page)
+        process_all_articles(playwright, browser, context, page)
 
-        # Should generate ID from title and timestamp
         expected_id = "Fallback Title_2023-12-01T10:00:00Z"
         mock_save.assert_called_once_with(expected_id)
 

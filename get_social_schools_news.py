@@ -112,8 +112,9 @@ DIGEST_PROMPT_TEMPLATE = (
     "}}\n\n"
     "Rules:\n"
     "- action_items and key_dates are empty arrays [] if none exist.\n"
-    "- Each action item: '15 Aug - sign the trip form'\n"
-    "- Each key date: '16 Jul - studiedag, no school'\n"
+    "- action_items: things the parent must actively do. Format: 'DD Mon - what to do'\n"
+    "- key_dates: informational events or closures the parent does not need to act on. Format: 'DD Mon - event'\n"
+    "- Do NOT repeat a date in key_dates if it already appears in action_items.\n"
     "- All text values in {language}.\n"
     "- Output ONLY the JSON object, nothing else.\n\n"
     "--- MESSAGE START ---\n"
@@ -358,11 +359,13 @@ def render_digest_notification(data: Digest, failed_attachments=None):
     if data.action_items:
         action_block = "Action Items:\n" + "\n".join(f"\u25b8 {item}" for item in data.action_items)
         sections.append(action_block)
-    else:
-        sections.append("No action needed")
 
     if data.key_dates:
-        sections.append("\n".join(data.key_dates))
+        dates_block = "Key Dates:\n" + "\n".join(f"\u25b8 {d}" for d in data.key_dates)
+        sections.append(dates_block)
+
+    if not data.action_items and not data.key_dates:
+        sections.append("No action needed")
 
     if failed_attachments:
         sections.append("\u26a0 An attachment could not be read \u2014 check the original post for complete info")

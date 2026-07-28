@@ -445,7 +445,7 @@ def test_dict_to_digest_deduplicates_action_items_and_key_dates():
 
 
 def test_render_digest_notification_with_items():
-    """Test rendering prefixes action items with bullet and appends key dates"""
+    """Test rendering prefixes action items and key dates with bullets under labelled headers"""
     data = Digest(
         translated_title="School Event",
         tldr="Summary of event.",
@@ -453,7 +453,7 @@ def test_render_digest_notification_with_items():
         key_dates=["16 Jul - studiedag, no school"],
     )
     result = render_digest_notification(data)
-    assert result == "Summary of event.\n\nAction Items:\n\u25b8 15 Aug - bring gym shoes\n\n16 Jul - studiedag, no school"
+    assert result == "Summary of event.\n\nAction Items:\n\u25b8 15 Aug - bring gym shoes\n\nKey Dates:\n\u25b8 16 Jul - studiedag, no school"
 
 
 def test_render_digest_notification_tldr_fallback():

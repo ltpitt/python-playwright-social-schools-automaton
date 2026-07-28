@@ -26,9 +26,9 @@ By default, notifications go only to the devices logged into the Pushbullet acco
 
 1. Each recipient creates their own free [Pushbullet](https://www.pushbullet.com/) account (or uses their existing one) and installs the app on their phone.
 2. Each recipient generates their own access token at [pushbullet.com/#settings/account](https://www.pushbullet.com/#settings/account).
-3. Add those tokens to `config.ini` as `PUSHBULLET_EXTRA_API_KEYS`, comma-separated:
+3. Add those tokens to `config.ini` as `PUSHBULLET_EXTRA_API_KEYS`, as comma-separated `name:token` pairs (the name is only used in logs, so you can tell who a push went to):
    ```ini
-   PUSHBULLET_EXTRA_API_KEYS = partners_token_here,another_persons_token_here
+   PUSHBULLET_EXTRA_API_KEYS = Partner:partners_token_here,Grandma:another_persons_token_here
    ```
 4. The script pushes the same notification individually to your key and every extra key. Nobody needs access to anyone else's token, and only the people you explicitly list ever receive anything.
 

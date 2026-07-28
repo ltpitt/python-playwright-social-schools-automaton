@@ -119,10 +119,10 @@ def test_send_notification_without_extra_keys_posts_once(mock_config):
 
 
 def test_send_notification_with_extra_keys_pushes_to_each_recipient():
-    """Test that the same notification is pushed individually to the primary key and each extra key"""
+    """Test that the same notification is pushed individually to the primary key and each named extra key"""
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
-        send_notification("Test Title", "Test Body", api_key="test_key", extra_api_keys=["partner_key"])
+        send_notification("Test Title", "Test Body", api_key="test_key", extra_api_keys={"Partner": "partner_key"})
         assert mock_post.call_count == 2
         sent_keys = [call.kwargs["headers"]["Authorization"] for call in mock_post.call_args_list]
         assert sent_keys == ["Bearer test_key", "Bearer partner_key"]
@@ -130,7 +130,7 @@ def test_send_notification_with_extra_keys_pushes_to_each_recipient():
 
 def test_send_notification_uses_configured_extra_api_keys(mock_config):
     """Test that send_notification falls back to Config.PUSHBULLET_EXTRA_API_KEYS when not passed explicitly"""
-    mock_config.PUSHBULLET_EXTRA_API_KEYS = "partner_key,another_key"
+    mock_config.PUSHBULLET_EXTRA_API_KEYS = "Partner:partner_key,Grandma:another_key"
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
         send_notification("Test Title", "Test Body")
@@ -140,11 +140,21 @@ def test_send_notification_uses_configured_extra_api_keys(mock_config):
 
 
 def test_parse_extra_api_keys_splits_and_strips():
-    assert _parse_extra_api_keys("key1, key2 ,key3") == ["key1", "key2", "key3"]
+    assert _parse_extra_api_keys("Partner: key1 , Grandma:key2") == {"Partner": "key1", "Grandma": "key2"}
 
 
-def test_parse_extra_api_keys_empty_string_returns_empty_list():
-    assert _parse_extra_api_keys("") == []
+def test_parse_extra_api_keys_empty_string_returns_empty_dict():
+    assert _parse_extra_api_keys("") == {}
+
+
+def test_parse_extra_api_keys_rejects_entry_missing_colon():
+    with pytest.raises(ValueError):
+        _parse_extra_api_keys("just_a_key_no_name")
+
+
+def test_parse_extra_api_keys_rejects_entry_missing_name():
+    with pytest.raises(ValueError):
+        _parse_extra_api_keys(":key_without_a_name")
 
 
 def test_send_notification_raises_on_http_error():

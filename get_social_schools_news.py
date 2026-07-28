@@ -41,9 +41,10 @@ class Config:
     PUSHBULLET_API_KEY: str
     TRANSLATION_LANGUAGE: str = "en"
     DIGEST_ENABLED: bool = True
-    # Comma-separated Pushbullet access tokens for additional recipients (e.g. a
-    # partner's own account). Each key is a private, per-person credential, so
-    # only people you explicitly add here ever receive anything.
+    # Comma-separated 'name:token' pairs for additional recipients (e.g.
+    # "Partner:abcd1234"). Each token is a private, per-person Pushbullet
+    # access token, so only people you explicitly add here ever receive
+    # anything, and the name lets logs identify who a push went to.
     PUSHBULLET_EXTRA_API_KEYS: str = ""
 
 
@@ -232,10 +233,27 @@ def translate(text, src="nl", dest=None, chunk_size=4900):
 
 
 def _parse_extra_api_keys(raw):
-    """Split a comma-separated string of Pushbullet API keys into a clean list."""
+    """Parse a comma-separated 'name:key' string into an ordered {name: key} dict.
+
+    Raises ValueError if an entry is missing the ':' separator or has an
+    empty name/key, so misconfiguration is caught early instead of silently
+    dropping a recipient.
+    """
     if not raw:
-        return []
-    return [key.strip() for key in raw.split(",") if key.strip()]
+        return {}
+    parsed = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, sep, key = entry.partition(":")
+        name, key = name.strip(), key.strip()
+        if not sep or not name or not key:
+            raise ValueError(
+                f"Invalid PUSHBULLET_EXTRA_API_KEYS entry {entry!r}; expected 'name:key'"
+            )
+        parsed[name] = key
+    return parsed
 
 
 def send_notification(title, body, api_key=None, extra_api_keys=None):
@@ -246,7 +264,9 @@ def send_notification(title, body, api_key=None, extra_api_keys=None):
     logger.info(f"Sending Pushbullet notification with title: {title}")
     logger.debug(f"Notification body:\n{body}")
     params = {"type": "note", "title": title, "body": body}
-    for key in [api_key, *extra_api_keys]:
+    recipients = {"primary": api_key, **extra_api_keys}
+    for name, key in recipients.items():
+        logger.debug(f"Pushing notification to recipient '{name}'")
         response = requests.post(
             "https://api.pushbullet.com/v2/pushes",
             data=json.dumps(params),

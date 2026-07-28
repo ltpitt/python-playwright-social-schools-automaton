@@ -49,7 +49,6 @@ class Digest:
     tldr: str
     action_items: list
     key_dates: list
-    attachment_references: list
 
 
 @dataclass
@@ -109,8 +108,7 @@ DIGEST_PROMPT_TEMPLATE = (
     "  \"tldr\": \"<1-3 sentence summary in {language}, empty string if "
     "action_items and key_dates cover everything>\",\n"
     "  \"action_items\": [\"<deadline first - what parent must do>\"],\n"
-    "  \"key_dates\": [\"<date - event or closure>\"],\n"
-    "  \"attachment_references\": [\"<filename>\"]\n"
+    "  \"key_dates\": [\"<date - event or closure>\"]\n"
     "}}\n\n"
     "Rules:\n"
     "- action_items and key_dates are empty arrays [] if none exist.\n"
@@ -124,7 +122,7 @@ DIGEST_PROMPT_TEMPLATE = (
     "--- MESSAGE END ---"
 )
 
-REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "action_items", "key_dates", "attachment_references"}
+REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "action_items", "key_dates"}
 
 
 def load_processed_articles():
@@ -325,7 +323,7 @@ def _dict_to_digest(data: dict) -> Digest:
         raise ValueError("'translated_title' must be a non-empty string")
     if not isinstance(data.get("tldr"), str):
         raise ValueError("'tldr' must be a string")
-    for field in ("action_items", "key_dates", "attachment_references"):
+    for field in ("action_items", "key_dates"):
         if not isinstance(data[field], list):
             raise ValueError(f"Field '{field}' must be a list")
     return Digest(
@@ -333,7 +331,6 @@ def _dict_to_digest(data: dict) -> Digest:
         tldr=data["tldr"],
         action_items=list(dict.fromkeys(data["action_items"])),
         key_dates=list(dict.fromkeys(data["key_dates"])),
-        attachment_references=data["attachment_references"],
     )
 
 
@@ -400,8 +397,7 @@ def generate_digest(title, body, attachments):
             "The previous response was not valid JSON or was missing required fields. "
             "Respond with ONLY this JSON structure (no markdown, no explanation):\n"
             '{\n  "translated_title": "...",\n  "tldr": "...",\n'
-            '  "action_items": [...],\n  "key_dates": [...],\n'
-            '  "attachment_references": [...]\n}\n\n'
+            '  "action_items": [...],\n  "key_dates": [...]\n}\n\n'
             f"Previous invalid response:\n{raw}\n\n"
             f"Original prompt:\n{prompt}"
         )
@@ -415,17 +411,9 @@ def generate_digest(title, body, attachments):
                 tldr="(Could not generate summary \u2014 open the original post for details)",
                 action_items=[],
                 key_dates=[],
-                attachment_references=[],
             )
 
     logger.info("Digest validated successfully")
-
-    # Validate attachment_references against all known filenames (including failed extractions)
-    all_names = {a.filename for a in attachments}
-    hallucinated = [ref for ref in digest.attachment_references if ref not in all_names]
-    if hallucinated:
-        logger.warning(f"Digest contained hallucinated attachment references (filtered): {hallucinated}")
-    digest.attachment_references = [ref for ref in digest.attachment_references if ref in all_names]
 
     return digest
 

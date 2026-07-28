@@ -134,7 +134,6 @@ def test_process_article_content(mock_playwright, mock_config):
             tldr="Short summary",
             action_items=[],
             key_dates=[],
-            attachment_references=[],
         )
 
         process_article_content(playwright, browser, context, article)
@@ -203,7 +202,6 @@ def test_process_article_content_missing_attachments(mock_playwright,
             tldr="Short summary",
             action_items=[],
             key_dates=[],
-            attachment_references=[],
         )
 
         process_article_content(playwright, browser, context, article)
@@ -300,7 +298,6 @@ def test_generate_digest(mock_config):
         "tldr": "Children need gym shoes",
         "action_items": ["15 Aug - bring gym shoes"],
         "key_dates": ["16 Aug - school closed"],
-        "attachment_references": [],
     }
     mock_result = Mock()
     mock_result.returncode = 0
@@ -332,7 +329,6 @@ def test_generate_digest_with_attachments(mock_config):
         "tldr": "",
         "action_items": ["15 Aug - sign and return the form"],
         "key_dates": [],
-        "attachment_references": ["form.pdf"],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
@@ -371,7 +367,6 @@ def test_generate_digest_retry_on_invalid_json(mock_config):
         "tldr": "Summary",
         "action_items": [],
         "key_dates": [],
-        "attachment_references": [],
     })
 
     invalid_result = Mock()
@@ -403,7 +398,6 @@ def test_generate_digest_fallback_on_second_failure(mock_config):
         assert result.translated_title == "School Trip"
         assert result.action_items == []
         assert result.key_dates == []
-        assert result.attachment_references == []
 
 
 def test_copilot_command_has_no_tool_flags():
@@ -424,7 +418,6 @@ def test_generate_digest_includes_failed_attachment_in_prompt(mock_config):
         "tldr": "",
         "action_items": [],
         "key_dates": [],
-        "attachment_references": [],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
@@ -445,7 +438,6 @@ def test_dict_to_digest_deduplicates_action_items_and_key_dates():
         "tldr": "",
         "action_items": ["15 Aug - sign form", "15 Aug - sign form", "25 Aug - attend"],
         "key_dates": ["4 Jul - holiday", "4 Jul - holiday"],
-        "attachment_references": [],
     }
     digest = _dict_to_digest(data)
     assert digest.action_items == ["15 Aug - sign form", "25 Aug - attend"]
@@ -459,7 +451,6 @@ def test_render_digest_notification_with_items():
         tldr="Summary of event.",
         action_items=["15 Aug - bring gym shoes"],
         key_dates=["16 Jul - studiedag, no school"],
-        attachment_references=[],
     )
     result = render_digest_notification(data)
     assert result == "Summary of event.\n\nAction Items:\n\u25b8 15 Aug - bring gym shoes\n\n16 Jul - studiedag, no school"
@@ -472,7 +463,6 @@ def test_render_digest_notification_tldr_fallback():
         tldr="The school will be closed for renovation.",
         action_items=[],
         key_dates=[],
-        attachment_references=[],
     )
     result = render_digest_notification(data)
     assert result == "The school will be closed for renovation.\n\nNo action needed"
@@ -485,7 +475,6 @@ def test_render_digest_notification_with_attachments():
         tldr="",
         action_items=["15 Aug - sign form"],
         key_dates=[],
-        attachment_references=["form.pdf"],
     )
     result = render_digest_notification(data)
     assert result == "Action Items:\n\u25b8 15 Aug - sign form"
@@ -498,7 +487,6 @@ def test_render_digest_notification_with_failed_attachments():
         tldr="",
         action_items=["15 Aug - sign form"],
         key_dates=[],
-        attachment_references=[],
     )
     result = render_digest_notification(
         data,
@@ -982,7 +970,6 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
             tldr="",
             action_items=["15 Aug - action"],
             key_dates=[],
-            attachment_references=["doc.pdf"],
         )
         mock_pdf.return_value = [Attachment(
             filename="doc.pdf", url="http://example.com/doc.pdf",

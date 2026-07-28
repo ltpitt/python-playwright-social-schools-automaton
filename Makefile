@@ -1,4 +1,15 @@
-.PHONY: install lint test check run loop clean
+.PHONY: help install lint test check run loop clean
+
+help:
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "  install  Install Python dependencies"
+	@echo "  lint     flake8 strict + full style check"
+	@echo "  test     Run pytest suite"
+	@echo "  check    lint + test + import sanity (CI gate)"
+	@echo "  run      Run the main script (requires config.ini)"
+	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
+	@echo "  clean    Remove Python cache directories"
 
 # Install Python dependencies
 install:

@@ -730,22 +730,23 @@ def test_render_digest_notification_with_failed_attachments():
 
 
 def test_render_digest_notification_with_original_title_and_date():
-    """Test that the footer includes the original post title and date for traceability"""
+    """Test that the post date/time is shown prominently at the top, and the footer has no date"""
     data = Digest(
         translated_title="Trip Form",
         tldr="",
         action_items=["15 Aug - sign form"],
         key_dates=[],
     )
-    result = render_digest_notification(data, original_title="Formulier reis", post_date="1 Jul")
+    result = render_digest_notification(data, original_title="Formulier reis", post_date="1 Jul 10:00")
     assert result == (
+        "\U0001F4C5 1 Jul 10:00\n\n"
         "Action Items:\n\u25b8 15 Aug - sign form\n\n"
-        "To find this post in Social Schools, look for: \"Formulier reis\" (1 Jul)"
+        "To find this post in Social Schools, look for: \"Formulier reis\""
     )
 
 
 def test_render_digest_notification_with_original_title_no_date():
-    """Test that the footer omits the date parenthetical when no post date is available"""
+    """Test that no date line is rendered when no post date is available"""
     data = Digest(
         translated_title="Trip Form",
         tldr="",
@@ -757,6 +758,18 @@ def test_render_digest_notification_with_original_title_no_date():
         "No action needed\n\n"
         "To find this post in Social Schools, look for: \"Formulier reis\""
     )
+
+
+def test_render_digest_notification_with_date_no_original_title():
+    """Test that the date line still renders even when there is no footer"""
+    data = Digest(
+        translated_title="Trip Form",
+        tldr="",
+        action_items=["15 Aug - sign form"],
+        key_dates=[],
+    )
+    result = render_digest_notification(data, post_date="23 Jun 15:00")
+    assert result == "\U0001F4C5 23 Jun 15:00\n\nAction Items:\n\u25b8 15 Aug - sign form"
 
 
 def test_render_digest_notification_without_original_title_omits_footer():
@@ -771,37 +784,65 @@ def test_render_digest_notification_without_original_title_omits_footer():
     assert "To find this post" not in result
 
 
-def test_get_post_date_valid():
-    """Test that a valid datetime attribute is formatted as 'D Mon'"""
+def _mock_article_with_date_text(text):
     article = Mock()
-    time_el = Mock()
-    time_el.get_attribute.return_value = "2026-07-01T10:00:00+02:00"
-    article.query_selector.return_value = time_el
+    date_el = Mock()
+    date_el.inner_text.return_value = text
+    article.query_selector.return_value = date_el
+    return article
+
+
+def test_get_post_date_valid_with_time():
+    """Test that real Social Schools text ('D month om HH:MM') keeps both date and time"""
+    article = _mock_article_with_date_text("7 juli om 13:19")
+    assert _get_post_date(article) == "7 Jul 13:19"
+
+
+def test_get_post_date_valid_without_time():
+    """Test that a date with no time suffix still parses to just 'D Mon'"""
+    article = _mock_article_with_date_text("1 juli")
     assert _get_post_date(article) == "1 Jul"
 
 
-def test_get_post_date_no_time_element():
-    """Test that missing <time> element returns None"""
+@pytest.mark.parametrize("dutch,expected_abbr", [
+    ("januari", "Jan"), ("februari", "Feb"), ("maart", "Mar"), ("april", "Apr"),
+    ("mei", "May"), ("juni", "Jun"), ("juli", "Jul"), ("augustus", "Aug"),
+    ("september", "Sep"), ("oktober", "Oct"), ("november", "Nov"), ("december", "Dec"),
+])
+def test_get_post_date_all_dutch_months(dutch, expected_abbr):
+    """Test that every Dutch month name maps to the correct English abbreviation"""
+    article = _mock_article_with_date_text(f"23 {dutch} om 09:05")
+    assert _get_post_date(article) == f"23 {expected_abbr} 09:05"
+
+
+def test_get_post_date_case_insensitive():
+    """Test that month names are matched regardless of case"""
+    article = _mock_article_with_date_text("3 JULI om 14:09")
+    assert _get_post_date(article) == "3 Jul 14:09"
+
+
+def test_get_post_date_single_digit_day():
+    """Test that a single-digit day is not zero-padded"""
+    article = _mock_article_with_date_text("3 juli om 14:09")
+    assert _get_post_date(article) == "3 Jul 14:09"
+
+
+def test_get_post_date_no_date_element():
+    """Test that a missing date link (no a.meta-info) returns None"""
     article = Mock()
     article.query_selector.return_value = None
     assert _get_post_date(article) is None
 
 
-def test_get_post_date_no_datetime_attribute():
-    """Test that a <time> element without a datetime attribute returns None"""
-    article = Mock()
-    time_el = Mock()
-    time_el.get_attribute.return_value = None
-    article.query_selector.return_value = time_el
+def test_get_post_date_empty_text():
+    """Test that an empty date text returns None"""
+    article = _mock_article_with_date_text("")
     assert _get_post_date(article) is None
 
 
-def test_get_post_date_invalid_format():
-    """Test that an unparseable datetime attribute returns None instead of raising"""
-    article = Mock()
-    time_el = Mock()
-    time_el.get_attribute.return_value = "not-a-date"
-    article.query_selector.return_value = time_el
+def test_get_post_date_unparseable_text():
+    """Test that text without a recognizable day/month returns None instead of raising"""
+    article = _mock_article_with_date_text("not-a-date")
     assert _get_post_date(article) is None
 
 
@@ -1258,7 +1299,7 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
     article.query_selector.side_effect = lambda selector: {
         "span[as='div']": body_element,
         "h3": title_element,
-        "time": None,
+        "a.meta-info": None,
     }[selector]
 
     # Mock PDF and DOCX links

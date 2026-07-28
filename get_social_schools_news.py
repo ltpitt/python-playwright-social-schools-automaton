@@ -147,6 +147,19 @@ _IMPERATIVE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Social Schools renders a post's date/time as Dutch text (e.g. "7 juli om 13:19") rather than a
+# machine-readable <time> element. Map full Dutch month names to English abbreviations so
+# _get_post_date can parse that text directly.
+_DUTCH_MONTHS = {
+    "januari": "Jan", "februari": "Feb", "maart": "Mar", "april": "Apr",
+    "mei": "May", "juni": "Jun", "juli": "Jul", "augustus": "Aug",
+    "september": "Sep", "oktober": "Oct", "november": "Nov", "december": "Dec",
+}
+_POST_DATETIME_RE = re.compile(
+    r'(\d{1,2})\s+(' + "|".join(_DUTCH_MONTHS) + r')\b(?:[^\d]{0,6}(\d{1,2}:\d{2}))?',
+    re.IGNORECASE,
+)
+
 
 def load_processed_articles():
     try:
@@ -433,21 +446,36 @@ def _get_article_id(article):
 
 
 def _get_post_date(article):
-    """Return the post's date as 'D Mon' (e.g. '1 Jul'), or None if unavailable."""
-    time_el = article.query_selector("time")
-    if not time_el:
+    """Return the post's date/time as 'D Mon' or 'D Mon HH:MM', or None if unavailable.
+
+    Social Schools does not render a machine-readable <time datetime=...> element; the post
+    date/time is plain Dutch text inside a link, e.g. '7 juli om 13:19'. This parses that text
+    directly and keeps the time-of-day when present instead of collapsing it to just a date.
+    """
+    date_el = article.query_selector("a.meta-info")
+    if not date_el:
         return None
-    raw = time_el.get_attribute("datetime")
+    raw = date_el.inner_text()
     if not raw:
         return None
-    try:
-        return datetime.fromisoformat(raw).strftime("%-d %b")
-    except (ValueError, TypeError):
+    match = _POST_DATETIME_RE.search(raw)
+    if not match:
         return None
+    day, month_nl, time_part = match.group(1), match.group(2).lower(), match.group(3)
+    month_abbr = _DUTCH_MONTHS.get(month_nl)
+    if not month_abbr:
+        return None
+    result = f"{int(day)} {month_abbr}"
+    if time_part:
+        result += f" {time_part}"
+    return result
 
 
 def render_digest_notification(data: Digest, failed_attachments=None, original_title=None, post_date=None):
     sections = []
+
+    if post_date:
+        sections.append(f"\U0001F4C5 {post_date}")
 
     tldr = data.tldr.strip()
     if tldr:
@@ -468,8 +496,7 @@ def render_digest_notification(data: Digest, failed_attachments=None, original_t
         sections.append("\u26a0 An attachment could not be read \u2014 check the original post for complete info")
 
     if original_title:
-        when = f" ({post_date})" if post_date else ""
-        sections.append(f"To find this post in Social Schools, look for: \"{original_title}\"{when}")
+        sections.append(f"To find this post in Social Schools, look for: \"{original_title}\"")
 
     return "\n\n".join(sections)
 

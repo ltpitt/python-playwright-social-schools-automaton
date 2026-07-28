@@ -26,8 +26,7 @@ loop:
 	> loop_output.md
 	./loop.sh
 
-# Remove generated artefacts
+# Remove Python cache artefacts (run_report.txt / full_prompt.txt / loop_output.md are kept for inspection)
 clean:
-	rm -f run_report.txt full_prompt.txt loop_output.md
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true

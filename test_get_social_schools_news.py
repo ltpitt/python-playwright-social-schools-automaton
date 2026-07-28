@@ -32,6 +32,7 @@ from get_social_schools_news import (  # noqa: E402
     expand_full_text,
     _check_copilot_available,
     _get_article_id,
+    _get_post_date,
     _COPILOT_TOOL_FREE_ARGS,
     _dict_to_digest,
 )
@@ -139,7 +140,11 @@ def test_process_article_content(mock_playwright, mock_config):
         process_article_content(playwright, browser, context, article)
 
         mock_digest.assert_called_once()
-        mock_notify.assert_called_once_with(title="Translated Title", body="Short summary\n\nNo action needed")
+        mock_notify.assert_called_once_with(
+            title="Translated Title",
+            body="Short summary\n\nNo action needed\n\n"
+                 "To find this post in Social Schools, look for: \"Test Content\"",
+        )
 
 
 def test_load_processed_articles_error(tmp_path):
@@ -207,7 +212,11 @@ def test_process_article_content_missing_attachments(mock_playwright,
         process_article_content(playwright, browser, context, article)
 
         mock_digest.assert_called_once_with("Test Content", "Test Content", [])
-        mock_notify.assert_called_once_with(title="Translated Title", body="Short summary\n\nNo action needed")
+        mock_notify.assert_called_once_with(
+            title="Translated Title",
+            body="Short summary\n\nNo action needed\n\n"
+                 "To find this post in Social Schools, look for: \"Test Content\"",
+        )
 
 
 # =============================================================================
@@ -453,7 +462,10 @@ def test_render_digest_notification_with_items():
         key_dates=["16 Jul - studiedag, no school"],
     )
     result = render_digest_notification(data)
-    assert result == "Summary of event.\n\nAction Items:\n\u25b8 15 Aug - bring gym shoes\n\nKey Dates:\n\u25b8 16 Jul - studiedag, no school"
+    assert result == (
+        "Summary of event.\n\nAction Items:\n\u25b8 15 Aug - bring gym shoes\n\n"
+        "Key Dates:\n\u25b8 16 Jul - studiedag, no school"
+    )
 
 
 def test_render_digest_notification_tldr_fallback():
@@ -495,6 +507,82 @@ def test_render_digest_notification_with_failed_attachments():
     assert "\u26a0" in result
     assert "broken.pdf" not in result
     assert "socialschools" not in result
+
+
+def test_render_digest_notification_with_original_title_and_date():
+    """Test that the footer includes the original post title and date for traceability"""
+    data = Digest(
+        translated_title="Trip Form",
+        tldr="",
+        action_items=["15 Aug - sign form"],
+        key_dates=[],
+    )
+    result = render_digest_notification(data, original_title="Formulier reis", post_date="1 Jul")
+    assert result == (
+        "Action Items:\n\u25b8 15 Aug - sign form\n\n"
+        "To find this post in Social Schools, look for: \"Formulier reis\" (1 Jul)"
+    )
+
+
+def test_render_digest_notification_with_original_title_no_date():
+    """Test that the footer omits the date parenthetical when no post date is available"""
+    data = Digest(
+        translated_title="Trip Form",
+        tldr="",
+        action_items=[],
+        key_dates=[],
+    )
+    result = render_digest_notification(data, original_title="Formulier reis")
+    assert result == (
+        "No action needed\n\n"
+        "To find this post in Social Schools, look for: \"Formulier reis\""
+    )
+
+
+def test_render_digest_notification_without_original_title_omits_footer():
+    """Test that no footer is rendered when original_title is not provided"""
+    data = Digest(
+        translated_title="Trip Form",
+        tldr="",
+        action_items=["15 Aug - sign form"],
+        key_dates=[],
+    )
+    result = render_digest_notification(data)
+    assert "To find this post" not in result
+
+
+def test_get_post_date_valid():
+    """Test that a valid datetime attribute is formatted as 'D Mon'"""
+    article = Mock()
+    time_el = Mock()
+    time_el.get_attribute.return_value = "2026-07-01T10:00:00+02:00"
+    article.query_selector.return_value = time_el
+    assert _get_post_date(article) == "1 Jul"
+
+
+def test_get_post_date_no_time_element():
+    """Test that missing <time> element returns None"""
+    article = Mock()
+    article.query_selector.return_value = None
+    assert _get_post_date(article) is None
+
+
+def test_get_post_date_no_datetime_attribute():
+    """Test that a <time> element without a datetime attribute returns None"""
+    article = Mock()
+    time_el = Mock()
+    time_el.get_attribute.return_value = None
+    article.query_selector.return_value = time_el
+    assert _get_post_date(article) is None
+
+
+def test_get_post_date_invalid_format():
+    """Test that an unparseable datetime attribute returns None instead of raising"""
+    article = Mock()
+    time_el = Mock()
+    time_el.get_attribute.return_value = "not-a-date"
+    article.query_selector.return_value = time_el
+    assert _get_post_date(article) is None
 
 
 # =============================================================================
@@ -949,7 +1037,8 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
 
     article.query_selector.side_effect = lambda selector: {
         "span[as='div']": body_element,
-        "h3": title_element
+        "h3": title_element,
+        "time": None,
     }[selector]
 
     # Mock PDF and DOCX links
@@ -996,7 +1085,8 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
         )
         mock_notify.assert_called_once_with(
             title="Translated Title",
-            body="Action Items:\n\u25b8 15 Aug - action",
+            body="Action Items:\n\u25b8 15 Aug - action\n\n"
+                 "To find this post in Social Schools, look for: \"Test Title\"",
         )
 
 

@@ -349,7 +349,21 @@ def _get_article_id(article):
     return article_id
 
 
-def render_digest_notification(data: Digest, failed_attachments=None):
+def _get_post_date(article):
+    """Return the post's date as 'D Mon' (e.g. '1 Jul'), or None if unavailable."""
+    time_el = article.query_selector("time")
+    if not time_el:
+        return None
+    raw = time_el.get_attribute("datetime")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw).strftime("%-d %b")
+    except (ValueError, TypeError):
+        return None
+
+
+def render_digest_notification(data: Digest, failed_attachments=None, original_title=None, post_date=None):
     sections = []
 
     tldr = data.tldr.strip()
@@ -369,6 +383,10 @@ def render_digest_notification(data: Digest, failed_attachments=None):
 
     if failed_attachments:
         sections.append("\u26a0 An attachment could not be read \u2014 check the original post for complete info")
+
+    if original_title:
+        when = f" ({post_date})" if post_date else ""
+        sections.append(f"To find this post in Social Schools, look for: \"{original_title}\"{when}")
 
     return "\n\n".join(sections)
 
@@ -628,7 +646,12 @@ def process_article_content(playwright, browser, context, article):
     failed_names = [a.filename for a in attachments if a.failed] or None
     send_notification(
         title=data.translated_title,
-        body=render_digest_notification(data, failed_attachments=failed_names),
+        body=render_digest_notification(
+            data,
+            failed_attachments=failed_names,
+            original_title=title,
+            post_date=_get_post_date(article),
+        ),
     )
 
 

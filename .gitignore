@@ -170,3 +170,6 @@ full_prompt.txt
 loop_prompt.txt
 loop_output.md
 config.ini
+
+# Script runtime state
+processed_articles.json

@@ -50,9 +50,9 @@ Now, we can all sit back, relax, and let this script connect to the school websi
 2. **Checks for new content** in the feed (both PDFs and Word documents).
 3. **Downloads any new files** (PDFs and Word documents).
 4. **Extracts text** from the files.
-5. **Translates the text** into your preferred language (default is Italian).
-6. **Sends Pushbullet notifications** with both the original and translated text.
-7. **Saves the content** in both original and translated formats.
+5. **Builds a Digest** (or a plain translation, see [Notification modes](#notification-modes) above) in your preferred language (default is English), including the post's original date and time.
+6. **Sends Pushbullet notifications** with the result.
+7. **Remembers which articles it has already processed**, so you never get duplicate notifications.
 
 ## Prerequisites
 
@@ -73,15 +73,17 @@ Now, we can all sit back, relax, and let this script connect to the school websi
 3. Set up your configuration:
    - Copy the example configuration file:
      ```bash
-     cp config.example.py config.py
+     cp config.example.ini config.ini
      ```
-   - Open `config.py` in your favorite text editor
+   - Open `config.ini` in your favorite text editor
    - Fill in your details:
-     ```python
-     SCRAPED_WEBSITE_USER = "your.email@example.com"  # Your Social Schools login email
-     SCRAPED_WEBSITE_PASSWORD = "your_password"       # Your Social Schools password
-     PUSHBULLET_API_KEYS = "You:your_pushbullet_key"  # Comma-separated 'name:token' pairs, one per recipient
-     TRANSLATION_LANGUAGE = "it"                      # Use "en" for English, "it" for Italian, etc.
+     ```ini
+     [DEFAULT]
+     SCRAPED_WEBSITE_USER = your.email@example.com   # Your Social Schools login email
+     SCRAPED_WEBSITE_PASSWORD = your_password        # Your Social Schools password
+     PUSHBULLET_API_KEYS = You:your_pushbullet_key   # Comma-separated 'name:token' pairs, one per recipient
+     TRANSLATION_LANGUAGE = en                       # "en" for English, "it" for Italian, etc.
+     DIGEST_ENABLED = true                           # false for plain translation mode
      ```
    - Save the file
 
@@ -90,14 +92,20 @@ Now, we can all sit back, relax, and let this script connect to the school websi
     python get_social_schools_news.py
     ```
 
+## Running it on a schedule
+
+The script checks for new content once per run, so schedule it (e.g. hourly) with cron. Since `config.ini` and `processed_articles.json` are read relative to the current directory, `cd` into the repo before invoking the venv's Python:
+
+```cron
+0 * * * * cd "/path/to/python-playwright-social-schools-automaton" && "/path/to/python-playwright-social-schools-automaton/.venv/bin/python" "/path/to/python-playwright-social-schools-automaton/get_social_schools_news.py" >> "/path/to/python-playwright-social-schools-automaton/cron.log" 2>&1
+```
+
 ## Important notes
 
-- Keep your `config.py` file safe and never share it with others
+- Keep your `config.ini` file safe and never share it with others
 - The script will remember which articles it has already processed
 - You'll get notifications on your phone through Pushbullet when new content is available
-- The script will pause at certain points for you to check the content before proceeding
 - Both PDFs and Word documents are supported and will be processed automatically
-- All content is saved in both original and translated formats
 
 ## Meta
 

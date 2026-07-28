@@ -23,7 +23,7 @@ A PDF or Word document linked from an Article.
 _Avoid_: File, document, enclosure
 
 **Digest**:
-The structured, parent-facing output produced for one Article in Digest mode, in the reader's language, delivered as a single notification. Shape: translated title, a 1–3 sentence TL;DR, Action Items (or "No action needed"), optional Key Dates, and a reference back to any Attachment. Replaces the raw text entirely — the raw Article body and extracted Attachment text are model *input*, never delivered.
+The structured, parent-facing output produced for one Article in Digest mode, in the reader's language, delivered as a single notification. Shape: the Article's original post date/time, translated title, a 1–3 sentence TL;DR, Action Items (or "No action needed"), optional Key Dates, and a reference back to any Attachment. Replaces the raw text entirely — the raw Article body and extracted Attachment text are model *input*, never delivered.
 _Avoid_: Summary, report, notification body
 
 **Translation**:

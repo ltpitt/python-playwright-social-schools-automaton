@@ -41,6 +41,9 @@ class Config:
     PUSHBULLET_API_KEY: str
     TRANSLATION_LANGUAGE: str = "en"
     DIGEST_ENABLED: bool = True
+    # Name of the person owning PUSHBULLET_API_KEY, used only to label that
+    # recipient in logs (mirrors the naming in PUSHBULLET_EXTRA_API_KEYS).
+    PUSHBULLET_API_KEY_OWNER: str = "primary"
     # Comma-separated 'name:token' pairs for additional recipients (e.g.
     # "Partner:abcd1234"). Each token is a private, per-person Pushbullet
     # access token, so only people you explicitly add here ever receive
@@ -77,6 +80,7 @@ def load_config() -> Config:
         PUSHBULLET_API_KEY=config['DEFAULT']['PUSHBULLET_API_KEY'],
         TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en'),
         DIGEST_ENABLED=config['DEFAULT'].get('DIGEST_ENABLED', 'true').strip().lower() == 'true',
+        PUSHBULLET_API_KEY_OWNER=config['DEFAULT'].get('PUSHBULLET_API_KEY_OWNER', 'primary').strip() or 'primary',
         PUSHBULLET_EXTRA_API_KEYS=config['DEFAULT'].get('PUSHBULLET_EXTRA_API_KEYS', '').strip(),
     )
 
@@ -256,15 +260,17 @@ def _parse_extra_api_keys(raw):
     return parsed
 
 
-def send_notification(title, body, api_key=None, extra_api_keys=None):
+def send_notification(title, body, api_key=None, extra_api_keys=None, owner_name=None):
     if api_key is None:
         api_key = get_config().PUSHBULLET_API_KEY
     if extra_api_keys is None:
         extra_api_keys = _parse_extra_api_keys(get_config().PUSHBULLET_EXTRA_API_KEYS)
+    if owner_name is None:
+        owner_name = get_config().PUSHBULLET_API_KEY_OWNER
     logger.info(f"Sending Pushbullet notification with title: {title}")
     logger.debug(f"Notification body:\n{body}")
     params = {"type": "note", "title": title, "body": body}
-    recipients = {"primary": api_key, **extra_api_keys}
+    recipients = {owner_name: api_key, **extra_api_keys}
     for name, key in recipients.items():
         logger.debug(f"Pushing notification to recipient '{name}'")
         response = requests.post(

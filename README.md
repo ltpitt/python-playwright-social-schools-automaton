@@ -30,7 +30,7 @@ By default, notifications go only to the devices logged into the Pushbullet acco
    ```ini
    PUSHBULLET_EXTRA_API_KEYS = Partner:partners_token_here,Grandma:another_persons_token_here
    ```
-4. The script pushes the same notification individually to your key and every extra key. Nobody needs access to anyone else's token, and only the people you explicitly list ever receive anything.
+4. The script pushes the same notification individually to your key and every extra key. Nobody needs access to anyone else's token, and only the people you explicitly list ever receive anything. Optionally set `PUSHBULLET_API_KEY_OWNER = YourName` to label your own key in logs too (defaults to "primary").
 
 Leave `PUSHBULLET_EXTRA_API_KEYS` empty to keep the original single-recipient behavior.
 

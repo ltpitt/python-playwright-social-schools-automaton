@@ -157,6 +157,16 @@ def test_parse_extra_api_keys_rejects_entry_missing_name():
         _parse_extra_api_keys(":key_without_a_name")
 
 
+def test_send_notification_uses_configured_owner_name(mock_config):
+    """Test that the primary key is labeled with Config.PUSHBULLET_API_KEY_OWNER instead of the 'primary' default"""
+    mock_config.PUSHBULLET_API_KEY_OWNER = "Davide"
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.status_code = 200
+        send_notification("Test Title", "Test Body")
+        mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer test_api_key"
+
+
 def test_send_notification_raises_on_http_error():
     """Test send_notification propagates HTTP errors so articles stay unmarked for retry"""
     import requests as req_lib

@@ -36,6 +36,7 @@ from get_social_schools_news import (  # noqa: E402
     _COPILOT_TOOL_FREE_ARGS,
     _dict_to_digest,
     _parse_api_keys,
+    _extract_action_hints,
 )
 
 
@@ -485,6 +486,132 @@ def test_generate_digest_includes_failed_attachment_in_prompt(mock_config):
         assert "could not be extracted" in prompt
 
 
+def test_generate_digest_prompt_instructs_attachment_source_reference(mock_config):
+    """Test the prompt tells the model to cite the attachment filename for info sourced from one"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps({
+        "translated_title": "Title",
+        "tldr": "Summary",
+        "action_items": [],
+        "key_dates": [],
+    })
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        generate_digest("Title", "Body", [])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert "see filename.pdf" in prompt
+
+
+def test_generate_digest_includes_pre_scan_hints_in_prompt(mock_config):
+    """Test that detected dates/instructions are surfaced to the model as pre-scan hints"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps({
+        "translated_title": "Title",
+        "tldr": "",
+        "action_items": ["15 aug - lever het formulier in"],
+        "key_dates": [],
+    })
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        generate_digest("Title", "Gelieve het formulier voor 15 aug in te leveren.", [])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert "Pre-scan hints" in prompt
+        assert "15 aug" in prompt
+
+
+def test_generate_digest_omits_pre_scan_hints_when_none_found(mock_config):
+    """Test that the prompt has no hints section when no dates/instructions are detected"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps({
+        "translated_title": "Title",
+        "tldr": "Nothing notable.",
+        "action_items": [],
+        "key_dates": [],
+    })
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        generate_digest("Title", "Just a friendly note with no dates.", [])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert "Pre-scan hints" not in prompt
+
+
+def test_generate_digest_retry_prompt_demands_target_language(mock_config):
+    """Test the retry prompt explicitly requires the configured reader language"""
+    mock_config.TRANSLATION_LANGUAGE = "it"
+    invalid_result = Mock()
+    invalid_result.returncode = 0
+    invalid_result.stdout = "not valid json"
+
+    valid_result = Mock()
+    valid_result.returncode = 0
+    valid_result.stdout = json.dumps({
+        "translated_title": "Titolo",
+        "tldr": "Riassunto",
+        "action_items": [],
+        "key_dates": [],
+    })
+
+    with patch('subprocess.run', side_effect=[invalid_result, valid_result]) as mock_run:
+        generate_digest("Title", "Body", [])
+
+        retry_prompt = mock_run.call_args_list[1][0][0][
+            mock_run.call_args_list[1][0][0].index("-p") + 1
+        ]
+        assert "written in it" in retry_prompt
+
+
+def test_generate_digest_retries_when_first_response_has_no_content(mock_config):
+    """Test that an empty-content digest (valid JSON, but no tldr/items) triggers a retry"""
+    empty_result = Mock()
+    empty_result.returncode = 0
+    empty_result.stdout = json.dumps({
+        "translated_title": "Title",
+        "tldr": "",
+        "action_items": [],
+        "key_dates": [],
+    })
+
+    valid_result = Mock()
+    valid_result.returncode = 0
+    valid_result.stdout = json.dumps({
+        "translated_title": "Title",
+        "tldr": "Now with content",
+        "action_items": [],
+        "key_dates": [],
+    })
+
+    with patch('subprocess.run', side_effect=[empty_result, valid_result]) as mock_run:
+        result = generate_digest("Title", "Body", [])
+
+        assert mock_run.call_count == 2
+        assert result.tldr == "Now with content"
+
+
+def test_extract_action_hints_finds_dutch_date():
+    hints = _extract_action_hints("Lever het formulier in voor 15 aug alstublieft.")
+    assert any("15 aug" in h for h in hints)
+
+
+def test_extract_action_hints_finds_time():
+    hints = _extract_action_hints("De school start om 08:30 uur.")
+    assert any(h == "time: 08:30" for h in hints)
+
+
+def test_extract_action_hints_finds_imperative_phrase():
+    hints = _extract_action_hints("Gelieve het formulier voor vrijdag in te leveren.")
+    assert any(h.startswith("instruction:") for h in hints)
+
+
+def test_extract_action_hints_empty_when_no_matches():
+    assert _extract_action_hints("Fijne dag allemaal, tot morgen.") == []
+
+
 def test_dict_to_digest_deduplicates_action_items_and_key_dates():
     """Test that duplicate action items and key dates are removed preserving insertion order"""
     data = {
@@ -496,6 +623,54 @@ def test_dict_to_digest_deduplicates_action_items_and_key_dates():
     digest = _dict_to_digest(data)
     assert digest.action_items == ["15 Aug - sign form", "25 Aug - attend"]
     assert digest.key_dates == ["4 Jul - holiday"]
+
+
+def test_dict_to_digest_rejects_empty_digest():
+    """Test that a digest with no tldr, action items, or key dates is rejected as content-less"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "",
+        "action_items": [],
+        "key_dates": [],
+    }
+    with pytest.raises(ValueError, match="no content"):
+        _dict_to_digest(data)
+
+
+def test_dict_to_digest_accepts_tldr_only_digest():
+    """Test that a non-empty tldr alone is sufficient content, even with no items"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "Nothing to do this week.",
+        "action_items": [],
+        "key_dates": [],
+    }
+    digest = _dict_to_digest(data)
+    assert digest.tldr == "Nothing to do this week."
+
+
+def test_dict_to_digest_rejects_non_string_action_item():
+    """Test that a non-string entry in action_items is rejected"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "",
+        "action_items": [{"text": "15 Aug - sign form"}],
+        "key_dates": [],
+    }
+    with pytest.raises(ValueError, match="non-empty strings"):
+        _dict_to_digest(data)
+
+
+def test_dict_to_digest_rejects_blank_key_date():
+    """Test that a blank/whitespace-only entry in key_dates is rejected"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "Summary",
+        "action_items": [],
+        "key_dates": ["   "],
+    }
+    with pytest.raises(ValueError, match="non-empty strings"):
+        _dict_to_digest(data)
 
 
 def test_render_digest_notification_with_items():

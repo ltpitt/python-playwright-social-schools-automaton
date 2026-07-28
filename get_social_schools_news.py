@@ -120,15 +120,32 @@ DIGEST_PROMPT_TEMPLATE = (
     "- action_items: things the parent must actively do. Format: 'DD Mon - what to do'\n"
     "- key_dates: informational events or closures the parent does not need to act on. Format: 'DD Mon - event'\n"
     "- Do NOT repeat a date in key_dates if it already appears in action_items.\n"
+    "- Every true obligation with a deadline or date MUST appear as an action item, and every "
+    "non-actionable date MUST appear as a key date \u2014 use the pre-scan hints below (if any) so you "
+    "don't miss or misplace one, but never invent an item that isn't actually in the message.\n"
+    "- If an action item or key date is based on information found in an attachment rather than the "
+    "article body itself, append the source attachment's filename in parentheses at the end, e.g. "
+    "'DD Mon - what to do (see filename.pdf)'.\n"
     "- All text values in {language}.\n"
     "- Output ONLY the JSON object, nothing else.\n\n"
     "--- MESSAGE START ---\n"
     "Title: {title}\n\n"
     "{body}{attachments}\n"
     "--- MESSAGE END ---"
+    "{hints}"
 )
 
 REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "action_items", "key_dates"}
+
+_DATE_HINT_RE = re.compile(
+    r'\b\d{1,2}\s*(?:jan|feb|mrt|maart|apr|mei|jun(?:i)?|jul(?:i)?|aug|sep|okt|nov|dec)[a-z]*\.?',
+    re.IGNORECASE,
+)
+_TIME_HINT_RE = re.compile(r'\b([01]?\d|2[0-3])[:.][0-5]\d\b')
+_IMPERATIVE_HINT_RE = re.compile(
+    r'\b(graag|gelieve|zorg dat|vergeet niet|lever .{0,20}in|meenemen|inleveren|aanmeld\w*|betaal\w*|onderteken\w*)',
+    re.IGNORECASE,
+)
 
 
 def load_processed_articles():
@@ -347,7 +364,12 @@ def _extract_json(text):
 
 
 def _dict_to_digest(data: dict) -> Digest:
-    """Validate a raw JSON dict and convert it to a typed Digest. Raises ValueError on bad shape."""
+    """Validate a raw JSON dict's semantics (not just its shape) and convert it to a typed Digest.
+
+    Raises ValueError on missing/malformed fields, non-string list items, or a digest that carries
+    no actual content (empty tldr with no action items or key dates) so callers can retry instead of
+    silently accepting an incomplete brief.
+    """
     missing = REQUIRED_DIGEST_FIELDS - set(data.keys())
     if missing:
         raise ValueError(f"Missing required fields: {missing}")
@@ -356,14 +378,44 @@ def _dict_to_digest(data: dict) -> Digest:
     if not isinstance(data.get("tldr"), str):
         raise ValueError("'tldr' must be a string")
     for field in ("action_items", "key_dates"):
-        if not isinstance(data[field], list):
+        items = data[field]
+        if not isinstance(items, list):
             raise ValueError(f"Field '{field}' must be a list")
+        for item in items:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"Field '{field}' must contain only non-empty strings")
+
+    action_items = list(dict.fromkeys(data["action_items"]))
+    key_dates = list(dict.fromkeys(data["key_dates"]))
+    if not data["tldr"].strip() and not action_items and not key_dates:
+        raise ValueError("Digest has no content: 'tldr', 'action_items', and 'key_dates' are all empty")
+
     return Digest(
         translated_title=data["translated_title"],
         tldr=data["tldr"],
-        action_items=list(dict.fromkeys(data["action_items"])),
-        key_dates=list(dict.fromkeys(data["key_dates"])),
+        action_items=action_items,
+        key_dates=key_dates,
     )
+
+
+def _extract_action_hints(text):
+    """Pull candidate dates, times, and imperative phrases out of raw text as hints for the Digest prompt.
+
+    This is a lightweight heuristic pre-pass, not a substitute for the model's judgment: it just
+    surfaces likely obligations/dates in the source text so the prompt can point the model at them
+    instead of relying purely on it to notice them unaided.
+    """
+    hints = []
+    for match in _DATE_HINT_RE.finditer(text):
+        hints.append(f"date: {match.group(0).strip()}")
+    for match in _TIME_HINT_RE.finditer(text):
+        hints.append(f"time: {match.group(0)}")
+    for match in _IMPERATIVE_HINT_RE.finditer(text):
+        start = max(0, match.start() - 20)
+        end = min(len(text), match.end() + 40)
+        snippet = " ".join(text[start:end].split())
+        hints.append(f"instruction: \u2026{snippet}\u2026")
+    return hints
 
 
 def _get_article_id(article):
@@ -430,11 +482,22 @@ def generate_digest(title, body, attachments):
         failed_parts = [f"\n\n[Attachment: {a.filename} \u2014 could not be extracted]" for a in attachments if a.failed]
         attachment_text = "".join(parts + failed_parts)
 
+    hint_source = "\n".join([body] + [a.text for a in attachments if not a.failed])
+    hints = _extract_action_hints(hint_source)
+    hints_text = ""
+    if hints:
+        hints_text = (
+            "\n\nPre-scan hints (candidate dates/times/instructions detected automatically; "
+            "verify each against the message above \u2014 don't invent an item just because it's "
+            "listed here):\n" + "\n".join(f"- {h}" for h in hints)
+        )
+
     prompt = DIGEST_PROMPT_TEMPLATE.format(
         language=language,
         title=title,
         body=body,
         attachments=attachment_text,
+        hints=hints_text,
     )
 
     logger.info("Generating Digest via Copilot CLI")
@@ -446,8 +509,9 @@ def generate_digest(title, body, attachments):
     except (ValueError, json.JSONDecodeError) as e:
         logger.warning(f"Digest response invalid ({e}), retrying once")
         retry_prompt = (
-            "The previous response was not valid JSON or was missing required fields. "
-            "Respond with ONLY this JSON structure (no markdown, no explanation):\n"
+            "The previous response was not valid JSON, was missing required fields, or had no "
+            f"actual content. Respond with ONLY this JSON structure (no markdown, no explanation), "
+            f"with every text value written in {language}:\n"
             '{\n  "translated_title": "...",\n  "tldr": "...",\n'
             '  "action_items": [...],\n  "key_dates": [...]\n}\n\n'
             f"Previous invalid response:\n{raw}\n\n"

@@ -35,7 +35,7 @@ from get_social_schools_news import (  # noqa: E402
     _get_post_date,
     _COPILOT_TOOL_FREE_ARGS,
     _dict_to_digest,
-    _parse_extra_api_keys,
+    _parse_api_keys,
 )
 
 
@@ -45,7 +45,7 @@ def mock_config():
     test_config = Config(
         SCRAPED_WEBSITE_USER="test_user@example.com",
         SCRAPED_WEBSITE_PASSWORD="test_password",
-        PUSHBULLET_API_KEY="test_api_key",
+        PUSHBULLET_API_KEYS="Test:test_api_key",
         TRANSLATION_LANGUAGE="en",
         DIGEST_ENABLED=True,
     )
@@ -105,66 +105,52 @@ def test_translate(mock_config):
 def test_send_notification(mock_config):
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
-        send_notification("Test Title", "Test Body", "test_key")
+        send_notification("Test Title", "Test Body", "Test:test_key")
         mock_post.assert_called_once()
 
 
-def test_send_notification_without_extra_keys_posts_once(mock_config):
-    """Test that only one push is sent when PUSHBULLET_EXTRA_API_KEYS is unset (default behavior)"""
+def test_send_notification_with_single_key_posts_once(mock_config):
+    """Test that a single 'name:token' entry results in exactly one push"""
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
-        send_notification("Test Title", "Test Body", "test_key")
+        send_notification("Test Title", "Test Body", "Test:test_key")
         mock_post.assert_called_once()
         assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer test_key"
 
 
-def test_send_notification_with_extra_keys_pushes_to_each_recipient():
-    """Test that the same notification is pushed individually to the primary key and each named extra key"""
+def test_send_notification_with_multiple_keys_pushes_to_each_recipient():
+    """Test that the same notification is pushed individually to each named recipient"""
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
-        send_notification("Test Title", "Test Body", api_key="test_key", extra_api_keys={"Partner": "partner_key"})
+        send_notification("Test Title", "Test Body", api_keys={"Test": "test_key", "Partner": "partner_key"})
         assert mock_post.call_count == 2
         sent_keys = [call.kwargs["headers"]["Authorization"] for call in mock_post.call_args_list]
         assert sent_keys == ["Bearer test_key", "Bearer partner_key"]
 
 
-def test_send_notification_uses_configured_extra_api_keys(mock_config):
-    """Test that send_notification falls back to Config.PUSHBULLET_EXTRA_API_KEYS when not passed explicitly"""
-    mock_config.PUSHBULLET_EXTRA_API_KEYS = "Partner:partner_key,Grandma:another_key"
+def test_send_notification_uses_configured_api_keys(mock_config):
+    """Test that send_notification falls back to Config.PUSHBULLET_API_KEYS when not passed explicitly"""
+    mock_config.PUSHBULLET_API_KEYS = "Test:test_key,Partner:partner_key,Grandma:another_key"
     with patch('requests.post') as mock_post:
         mock_post.return_value.status_code = 200
         send_notification("Test Title", "Test Body")
         assert mock_post.call_count == 3
         sent_keys = [call.kwargs["headers"]["Authorization"] for call in mock_post.call_args_list]
-        assert sent_keys == ["Bearer test_api_key", "Bearer partner_key", "Bearer another_key"]
+        assert sent_keys == ["Bearer test_key", "Bearer partner_key", "Bearer another_key"]
 
 
-def test_parse_extra_api_keys_splits_and_strips():
-    assert _parse_extra_api_keys("Partner: key1 , Grandma:key2") == {"Partner": "key1", "Grandma": "key2"}
+def test_parse_api_keys_splits_and_strips():
+    assert _parse_api_keys("Partner: key1 , Grandma:key2") == {"Partner": "key1", "Grandma": "key2"}
 
 
-def test_parse_extra_api_keys_empty_string_returns_empty_dict():
-    assert _parse_extra_api_keys("") == {}
-
-
-def test_parse_extra_api_keys_rejects_entry_missing_colon():
+def test_parse_api_keys_rejects_entry_missing_colon():
     with pytest.raises(ValueError):
-        _parse_extra_api_keys("just_a_key_no_name")
+        _parse_api_keys("just_a_key_no_name")
 
 
-def test_parse_extra_api_keys_rejects_entry_missing_name():
+def test_parse_api_keys_rejects_entry_missing_name():
     with pytest.raises(ValueError):
-        _parse_extra_api_keys(":key_without_a_name")
-
-
-def test_send_notification_uses_configured_owner_name(mock_config):
-    """Test that the primary key is labeled with Config.PUSHBULLET_API_KEY_OWNER instead of the 'primary' default"""
-    mock_config.PUSHBULLET_API_KEY_OWNER = "Davide"
-    with patch('requests.post') as mock_post:
-        mock_post.return_value.status_code = 200
-        send_notification("Test Title", "Test Body")
-        mock_post.assert_called_once()
-        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer test_api_key"
+        _parse_api_keys(":key_without_a_name")
 
 
 def test_send_notification_raises_on_http_error():
@@ -175,7 +161,7 @@ def test_send_notification_raises_on_http_error():
         mock_response.raise_for_status.side_effect = req_lib.exceptions.HTTPError("401 Unauthorized")
         mock_post.return_value = mock_response
         with pytest.raises(req_lib.exceptions.HTTPError):
-            send_notification("Test", "Body", "bad_key")
+            send_notification("Test", "Body", "Test:bad_key")
 
 
 def test_process_article_content(mock_playwright, mock_config):
@@ -235,7 +221,7 @@ def test_send_notification_error(mock_config):
     """Test send_notification propagates network errors for retry-on-next-run"""
     with patch('requests.post', side_effect=Exception("Network error")):
         with pytest.raises(Exception, match="Network error"):
-            send_notification("Test Title", "Test Body", "test_key")
+            send_notification("Test Title", "Test Body", "Test:test_key")
 
 
 def test_process_article_content_error(mock_playwright, mock_config):
@@ -290,7 +276,7 @@ def test_load_config_with_config_ini(tmp_path):
         mock_default_section.__getitem__ = Mock(side_effect=lambda key: {
             'SCRAPED_WEBSITE_USER': 'user@example.com',
             'SCRAPED_WEBSITE_PASSWORD': 'password123',
-            'PUSHBULLET_API_KEY': 'api_key_123'
+            'PUSHBULLET_API_KEYS': 'Test:api_key_123'
         }[key])
         mock_default_section.get = Mock(return_value='it')
 
@@ -303,7 +289,7 @@ def test_load_config_with_config_ini(tmp_path):
 
         assert result.SCRAPED_WEBSITE_USER == 'user@example.com'
         assert result.SCRAPED_WEBSITE_PASSWORD == 'password123'
-        assert result.PUSHBULLET_API_KEY == 'api_key_123'
+        assert result.PUSHBULLET_API_KEYS == 'Test:api_key_123'
         assert result.TRANSLATION_LANGUAGE == 'it'
 
 
@@ -314,7 +300,7 @@ def test_load_config_fallback_to_example(tmp_path):
         mock_default_section.__getitem__ = Mock(side_effect=lambda key: {
             'SCRAPED_WEBSITE_USER': 'example@example.com',
             'SCRAPED_WEBSITE_PASSWORD': 'example_pass',
-            'PUSHBULLET_API_KEY': 'example_key'
+            'PUSHBULLET_API_KEYS': 'Test:example_key'
         }[key])
         mock_default_section.get = Mock(return_value='en')
 
@@ -335,7 +321,7 @@ def test_get_config_caching():
         mock_config = Config(
             SCRAPED_WEBSITE_USER="cached@example.com",
             SCRAPED_WEBSITE_PASSWORD="cached_pass",
-            PUSHBULLET_API_KEY="cached_key"
+            PUSHBULLET_API_KEYS="Test:cached_key"
         )
         mock_load.return_value = mock_config
 
@@ -816,7 +802,7 @@ def test_login_to_website_success(mock_playwright):
         mock_config = Config(
             SCRAPED_WEBSITE_USER="test@example.com",
             SCRAPED_WEBSITE_PASSWORD="testpass",
-            PUSHBULLET_API_KEY="testkey"
+            PUSHBULLET_API_KEYS="Test:testkey"
         )
         mock_get_config.return_value = mock_config
 
@@ -1076,7 +1062,7 @@ def test_send_notification_with_custom_api_key():
         mock_response.status_code = 200
         mock_post.return_value = mock_response
 
-        send_notification("Test", "Body", "custom_api_key")
+        send_notification("Test", "Body", "Custom:custom_api_key")
 
         mock_post.assert_called_once()
         call_args = mock_post.call_args
@@ -1258,7 +1244,7 @@ def test_config_missing_translation_language():
         mock_default_section.__getitem__ = Mock(side_effect=lambda key: {
             'SCRAPED_WEBSITE_USER': 'user@example.com',
             'SCRAPED_WEBSITE_PASSWORD': 'password123',
-            'PUSHBULLET_API_KEY': 'api_key_123'
+            'PUSHBULLET_API_KEYS': 'Test:api_key_123'
         }[key])
         mock_default_section.get = Mock(return_value='en')
 

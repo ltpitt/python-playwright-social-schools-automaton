@@ -22,17 +22,17 @@ Set `DIGEST_ENABLED = false` in `config.ini` if you don't have Copilot access or
 
 ## Notify multiple people
 
-By default, notifications go only to the devices logged into the Pushbullet account that owns `PUSHBULLET_API_KEY`. To also notify a partner (or anyone else) privately, give each of them their own Pushbullet access token:
+Notifications are sent individually to each entry in `PUSHBULLET_API_KEYS`, a comma-separated list of `name:token` pairs — one per recipient, each using their own private Pushbullet access token:
 
 1. Each recipient creates their own free [Pushbullet](https://www.pushbullet.com/) account (or uses their existing one) and installs the app on their phone.
 2. Each recipient generates their own access token at [pushbullet.com/#settings/account](https://www.pushbullet.com/#settings/account).
-3. Add those tokens to `config.ini` as `PUSHBULLET_EXTRA_API_KEYS`, as comma-separated `name:token` pairs (the name is only used in logs, so you can tell who a push went to):
+3. Set `PUSHBULLET_API_KEYS` in `config.ini` (the name is only used in logs, so you can tell who a push went to):
    ```ini
-   PUSHBULLET_EXTRA_API_KEYS = Partner:partners_token_here,Grandma:another_persons_token_here
+   PUSHBULLET_API_KEYS = You:your_token_here,Partner:partners_token_here,Grandma:another_persons_token_here
    ```
-4. The script pushes the same notification individually to your key and every extra key. Nobody needs access to anyone else's token, and only the people you explicitly list ever receive anything. Optionally set `PUSHBULLET_API_KEY_OWNER = YourName` to label your own key in logs too (defaults to "primary").
+4. The script pushes the same notification individually to every entry. Nobody needs access to anyone else's token, and only the people you explicitly list ever receive anything.
 
-Leave `PUSHBULLET_EXTRA_API_KEYS` empty to keep the original single-recipient behavior.
+A single entry (e.g. `PUSHBULLET_API_KEYS = You:your_token_here`) keeps the original single-recipient behavior.
 
 > We deliberately don't use Pushbullet **channels** for this: channel subscriptions require no approval from the owner, and the `channel-info` API is publicly queryable without authentication — anyone who learns the channel tag can read/subscribe to notifications. Since these notifications can include your child's name, school, and schedule, per-recipient private tokens are the safer choice.
 
@@ -80,7 +80,7 @@ Now, we can all sit back, relax, and let this script connect to the school websi
      ```python
      SCRAPED_WEBSITE_USER = "your.email@example.com"  # Your Social Schools login email
      SCRAPED_WEBSITE_PASSWORD = "your_password"       # Your Social Schools password
-     PUSHBULLET_API_KEY = "your_pushbullet_key"       # Get this from Pushbullet settings
+     PUSHBULLET_API_KEYS = "You:your_pushbullet_key"  # Comma-separated 'name:token' pairs, one per recipient
      TRANSLATION_LANGUAGE = "it"                      # Use "en" for English, "it" for Italian, etc.
      ```
    - Save the file

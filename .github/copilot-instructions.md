@@ -33,7 +33,7 @@ cp config.example.ini config.ini
 [DEFAULT]
 SCRAPED_WEBSITE_USER = your.email@socialschools.com    # Your Social Schools login
 SCRAPED_WEBSITE_PASSWORD = your_password               # Your Social Schools password  
-PUSHBULLET_API_KEY = your_pushbullet_api_key          # Get from Pushbullet settings
+PUSHBULLET_API_KEYS = You:your_pushbullet_api_key      # Comma-separated 'name:token' pairs, one per recipient
 TRANSLATION_LANGUAGE = en                              # "en" for English, "it" for Italian, etc.
 ```
 

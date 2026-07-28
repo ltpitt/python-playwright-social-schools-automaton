@@ -41,6 +41,7 @@ class Config:
     PUSHBULLET_API_KEY: str
     TRANSLATION_LANGUAGE: str = "en"
     DIGEST_ENABLED: bool = True
+    PUSHBULLET_CHANNEL_TAG: str = ""
 
 
 @dataclass
@@ -72,6 +73,7 @@ def load_config() -> Config:
         PUSHBULLET_API_KEY=config['DEFAULT']['PUSHBULLET_API_KEY'],
         TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en'),
         DIGEST_ENABLED=config['DEFAULT'].get('DIGEST_ENABLED', 'true').strip().lower() == 'true',
+        PUSHBULLET_CHANNEL_TAG=config['DEFAULT'].get('PUSHBULLET_CHANNEL_TAG', '').strip(),
     )
 
 
@@ -226,12 +228,16 @@ def translate(text, src="nl", dest=None, chunk_size=4900):
     return " ".join(translated_chunks)
 
 
-def send_notification(title, body, api_key=None):
+def send_notification(title, body, api_key=None, channel_tag=None):
     if api_key is None:
         api_key = get_config().PUSHBULLET_API_KEY
+    if channel_tag is None:
+        channel_tag = get_config().PUSHBULLET_CHANNEL_TAG
     logger.info(f"Sending Pushbullet notification with title: {title}")
     logger.debug(f"Notification body:\n{body}")
     params = {"type": "note", "title": title, "body": body}
+    if channel_tag:
+        params["channel_tag"] = channel_tag
     response = requests.post(
         "https://api.pushbullet.com/v2/pushes",
         data=json.dumps(params),

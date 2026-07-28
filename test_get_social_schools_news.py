@@ -108,6 +108,34 @@ def test_send_notification(mock_config):
         mock_post.assert_called_once()
 
 
+def test_send_notification_without_channel_tag_omits_it(mock_config):
+    """Test that no channel_tag is sent when PUSHBULLET_CHANNEL_TAG is unset (default behavior)"""
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.status_code = 200
+        send_notification("Test Title", "Test Body", "test_key")
+        sent_params = json.loads(mock_post.call_args.kwargs["data"])
+        assert "channel_tag" not in sent_params
+
+
+def test_send_notification_with_channel_tag_broadcasts():
+    """Test that channel_tag is included in the push payload to reach all channel subscribers"""
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.status_code = 200
+        send_notification("Test Title", "Test Body", api_key="test_key", channel_tag="family-channel")
+        sent_params = json.loads(mock_post.call_args.kwargs["data"])
+        assert sent_params["channel_tag"] == "family-channel"
+
+
+def test_send_notification_uses_configured_channel_tag(mock_config):
+    """Test that send_notification falls back to Config.PUSHBULLET_CHANNEL_TAG when not passed explicitly"""
+    mock_config.PUSHBULLET_CHANNEL_TAG = "family-channel"
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.status_code = 200
+        send_notification("Test Title", "Test Body")
+        sent_params = json.loads(mock_post.call_args.kwargs["data"])
+        assert sent_params["channel_tag"] == "family-channel"
+
+
 def test_send_notification_raises_on_http_error():
     """Test send_notification propagates HTTP errors so articles stay unmarked for retry"""
     import requests as req_lib

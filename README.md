@@ -20,6 +20,17 @@ The tool supports two modes, both treated as first-class:
 
 Set `DIGEST_ENABLED = false` in `config.ini` if you don't have Copilot access or prefer a simpler, cost-free setup. You'll still get every article translated and delivered to your phone.
 
+## Notify multiple people
+
+By default, notifications go only to the devices logged into the Pushbullet account that owns `PUSHBULLET_API_KEY`. To share notifications with a partner (or anyone else) without giving them your API key, use a Pushbullet **channel**:
+
+1. Go to [pushbullet.com](https://www.pushbullet.com/) → **My Channels** → **Create Channel**. Give it any name and tag (the tag is what goes in config).
+2. Set `PUSHBULLET_CHANNEL_TAG = your-channel-tag` in `config.ini`.
+3. Share the channel's subscribe link (`https://www.pushbullet.com/channel?tag=your-channel-tag`) with anyone who should receive notifications, including yourself if you still want them on your own devices — subscribing is a one-time action in their Pushbullet app.
+4. Everyone subscribed to the channel receives every notification the script sends. No extra API keys or code changes needed.
+
+Leave `PUSHBULLET_CHANNEL_TAG` empty to keep the original single-recipient behavior.
+
 ## Why this exists
 
 Hey there, awesome parents! 🎉

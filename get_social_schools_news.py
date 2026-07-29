@@ -46,6 +46,16 @@ class Config:
     PUSHBULLET_API_KEYS: str
     TRANSLATION_LANGUAGE: str = "en"
     DIGEST_ENABLED: bool = True
+    # LLM backend used to generate a Digest. Only consulted when DIGEST_ENABLED
+    # is true; Translation mode never touches any of these.
+    #   "copilot"            -> the GitHub Copilot CLI (default, ADR 0001)
+    #   "openai_compatible"  -> any OpenAI-compatible /chat/completions endpoint
+    #                           (local Ollama, OpenRouter, and most cloud providers)
+    LLM_PROVIDER: str = "copilot"
+    LLM_BASE_URL: str = ""
+    LLM_MODEL: str = ""
+    LLM_API_KEY: str = ""
+    LLM_TIMEOUT: int = 120
 
 
 @dataclass
@@ -77,6 +87,11 @@ def load_config() -> Config:
         PUSHBULLET_API_KEYS=config['DEFAULT']['PUSHBULLET_API_KEYS'],
         TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en'),
         DIGEST_ENABLED=config['DEFAULT'].get('DIGEST_ENABLED', 'true').strip().lower() == 'true',
+        LLM_PROVIDER=config['DEFAULT'].get('LLM_PROVIDER', 'copilot').strip().lower(),
+        LLM_BASE_URL=config['DEFAULT'].get('LLM_BASE_URL', '').strip(),
+        LLM_MODEL=config['DEFAULT'].get('LLM_MODEL', '').strip(),
+        LLM_API_KEY=config['DEFAULT'].get('LLM_API_KEY', '').strip(),
+        LLM_TIMEOUT=int(config['DEFAULT'].get('LLM_TIMEOUT', '120').strip() or '120'),
     )
 
 
@@ -347,6 +362,119 @@ def _run_copilot(prompt):
     return result.stdout.strip()
 
 
+# --- LLM provider seam -------------------------------------------------------
+# A provider turns a prompt into completion text and nothing else. Per ADR 0002,
+# every provider MUST behave as a pure text transformer: no tools, no function
+# calling, no URL fetching. Article/attachment text is untrusted input, so the
+# worst case of a poisoned message must stay "a low-quality Digest", never code
+# execution or a network side effect chosen by the model.
+#
+# Providers are constructed lazily via get_provider(), which is only ever called
+# from the Digest code path. When DIGEST_ENABLED is false no provider is built,
+# so Translation mode stays completely free of LLM machinery.
+
+
+class LLMProvider:
+    """Interface for turning a prompt into completion text."""
+
+    def health_check(self) -> None:
+        """Fail fast (raise RuntimeError) if the backend is not reachable."""
+        raise NotImplementedError
+
+    def complete(self, prompt: str) -> str:
+        """Return the model's completion text for the given prompt."""
+        raise NotImplementedError
+
+
+class CopilotCliProvider(LLMProvider):
+    """Default backend: the GitHub Copilot CLI in non-interactive, tool-free mode (ADR 0001/0002)."""
+
+    def health_check(self) -> None:
+        _check_copilot_available()
+
+    def complete(self, prompt: str) -> str:
+        return _run_copilot(prompt)
+
+
+class OpenAICompatibleProvider(LLMProvider):
+    """Any OpenAI-compatible /chat/completions endpoint.
+
+    One adapter covers local/LAN Ollama (http://host:11434/v1), OpenRouter,
+    and most cloud providers. No 'tools'/'functions' are ever sent (ADR 0002).
+    """
+
+    def __init__(self, base_url, model, api_key="", timeout=120):
+        if not base_url:
+            raise RuntimeError("LLM_BASE_URL is required for the 'openai_compatible' provider")
+        if not model:
+            raise RuntimeError("LLM_MODEL is required for the 'openai_compatible' provider")
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def _headers(self):
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def health_check(self) -> None:
+        try:
+            resp = requests.get(f"{self.base_url}/models", headers=self._headers(), timeout=10)
+        except requests.RequestException as e:
+            raise RuntimeError(f"LLM endpoint unreachable at {self.base_url}: {e}")
+        # Local/key-less servers may reject /models with 4xx; only a 5xx means the
+        # endpoint itself is unhealthy. Anything reachable is good enough to proceed.
+        if resp.status_code >= 500:
+            raise RuntimeError(
+                f"LLM endpoint health check failed ({resp.status_code}) at {self.base_url}"
+            )
+
+    def complete(self, prompt: str) -> str:
+        # ADR 0002: deliberately no 'tools'/'functions' key — pure text transformer only.
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+        try:
+            resp = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                data=json.dumps(payload),
+                timeout=self.timeout,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(f"LLM request to {self.base_url} failed: {e}")
+        if resp.status_code != 200:
+            logger.error(f"LLM endpoint error body:\n{resp.text}")
+            raise RuntimeError(f"LLM endpoint returned status {resp.status_code}")
+        try:
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+        except (ValueError, KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Unexpected LLM response shape: {e}")
+
+
+def get_provider() -> LLMProvider:
+    """Build the configured LLM provider. Lazy — called only from the Digest path."""
+    cfg = get_config()
+    provider = (cfg.LLM_PROVIDER or "copilot").strip().lower()
+    if provider == "copilot":
+        return CopilotCliProvider()
+    if provider == "openai_compatible":
+        return OpenAICompatibleProvider(
+            base_url=cfg.LLM_BASE_URL,
+            model=cfg.LLM_MODEL,
+            api_key=cfg.LLM_API_KEY,
+            timeout=cfg.LLM_TIMEOUT,
+        )
+    raise RuntimeError(
+        f"Unknown LLM_PROVIDER {provider!r}; expected 'copilot' or 'openai_compatible'"
+    )
+
+
 def _extract_json(text):
     # 1. Clean parse
     try:
@@ -527,9 +655,10 @@ def generate_digest(title, body, attachments):
         hints=hints_text,
     )
 
-    logger.info("Generating Digest via Copilot CLI")
-    raw = _run_copilot(prompt)
-    logger.debug(f"Copilot raw response:\n{raw}")
+    provider = get_provider()
+    logger.info(f"Generating Digest via {type(provider).__name__}")
+    raw = provider.complete(prompt)
+    logger.debug(f"LLM raw response:\n{raw}")
 
     try:
         digest = _dict_to_digest(_extract_json(raw))
@@ -544,7 +673,7 @@ def generate_digest(title, body, attachments):
             f"Previous invalid response:\n{raw}\n\n"
             f"Original prompt:\n{prompt}"
         )
-        raw = _run_copilot(retry_prompt)
+        raw = provider.complete(retry_prompt)
         try:
             digest = _dict_to_digest(_extract_json(raw))
         except (ValueError, json.JSONDecodeError) as e2:
@@ -623,7 +752,7 @@ def run(playwright):
 
         if "home" in page.url:
             if get_config().DIGEST_ENABLED:
-                _check_copilot_available()
+                get_provider().health_check()
             process_all_articles(playwright, browser, context, page)
         else:
             raise Exception("Login failed - URL does not contain 'home'")

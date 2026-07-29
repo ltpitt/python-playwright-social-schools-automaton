@@ -15,10 +15,22 @@ The tool supports two modes, both treated as first-class:
 
 | Mode | Config | What you get | Requirements |
 |---|---|---|---|
-| **Digest** (default) | `DIGEST_ENABLED = true` | Structured brief: TL;DR, action items, key dates, attachment link | GitHub Copilot CLI |
+| **Digest** (default) | `DIGEST_ENABLED = true` | Structured brief: TL;DR, action items, key dates, attachment link | An LLM backend (see below) |
 | **Translation** | `DIGEST_ENABLED = false` | Google-translated article title + body | None beyond Python deps |
 
-Set `DIGEST_ENABLED = false` in `config.ini` if you don't have Copilot access or prefer a simpler, cost-free setup. You'll still get every article translated and delivered to your phone.
+Set `DIGEST_ENABLED = false` in `config.ini` if you don't have an LLM backend or prefer a simpler, cost-free setup. You'll still get every article translated and delivered to your phone. In Translation mode no LLM machinery is loaded at all.
+
+### Choosing an LLM backend (Digest mode)
+
+When `DIGEST_ENABLED = true`, pick a backend with `LLM_PROVIDER`:
+
+| `LLM_PROVIDER` | Backend | Cost / privacy | Config needed |
+|---|---|---|---|
+| `copilot` (default) | GitHub Copilot CLI | Uses your Copilot plan; content goes to GitHub | Copilot CLI installed & authenticated |
+| `openai_compatible` | Local **Ollama** (`http://localhost:11434/v1`) | **Free & fully local** — content never leaves your network | `LLM_BASE_URL`, `LLM_MODEL` |
+| `openai_compatible` | **OpenRouter** / other cloud provider | Pay per use; content goes to that provider | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` |
+
+The `openai_compatible` provider works with any OpenAI-compatible `/chat/completions` endpoint (Ollama, OpenRouter, LM Studio, and most cloud providers), so one setting covers local, self-hosted, and cloud. See `config.example.ini` for ready-to-copy examples. Whichever backend you choose, the model is used as a pure text transformer with no tool access (see `docs/adr/0004-pluggable-llm-providers.md`).
 
 ## Notify multiple people
 

@@ -37,6 +37,9 @@ from get_social_schools_news import (  # noqa: E402
     _dict_to_digest,
     _parse_api_keys,
     _extract_action_hints,
+    get_provider,
+    CopilotCliProvider,
+    OpenAICompatibleProvider,
 )
 
 
@@ -279,7 +282,8 @@ def test_load_config_with_config_ini(tmp_path):
             'SCRAPED_WEBSITE_PASSWORD': 'password123',
             'PUSHBULLET_API_KEYS': 'Test:api_key_123'
         }[key])
-        mock_default_section.get = Mock(return_value='it')
+        mock_default_section.get = Mock(
+            side_effect=lambda key, default=None: {'TRANSLATION_LANGUAGE': 'it'}.get(key, default))
 
         mock_parser = Mock()
         mock_parser.__getitem__ = Mock(return_value=mock_default_section)
@@ -303,7 +307,8 @@ def test_load_config_fallback_to_example(tmp_path):
             'SCRAPED_WEBSITE_PASSWORD': 'example_pass',
             'PUSHBULLET_API_KEYS': 'Test:example_key'
         }[key])
-        mock_default_section.get = Mock(return_value='en')
+        mock_default_section.get = Mock(
+            side_effect=lambda key, default=None: {'TRANSLATION_LANGUAGE': 'en'}.get(key, default))
 
         mock_parser = Mock()
         mock_parser.__getitem__ = Mock(return_value=mock_default_section)
@@ -844,6 +849,180 @@ def test_get_post_date_unparseable_text():
     """Test that text without a recognizable day/month returns None instead of raising"""
     article = _mock_article_with_date_text("not-a-date")
     assert _get_post_date(article) is None
+
+
+# =============================================================================
+# LLM PROVIDER TESTS
+# =============================================================================
+
+
+def test_get_provider_defaults_to_copilot(mock_config):
+    """Default config selects the Copilot CLI provider"""
+    assert isinstance(get_provider(), CopilotCliProvider)
+
+
+def test_get_provider_openai_compatible():
+    """LLM_PROVIDER=openai_compatible builds the HTTP adapter from config"""
+    cfg = Config(
+        SCRAPED_WEBSITE_USER="u", SCRAPED_WEBSITE_PASSWORD="p",
+        PUSHBULLET_API_KEYS="Me:t", LLM_PROVIDER="openai_compatible",
+        LLM_BASE_URL="http://localhost:11434/v1", LLM_MODEL="llama3.1",
+    )
+    with patch('get_social_schools_news.load_config', return_value=cfg):
+        import get_social_schools_news
+        get_social_schools_news.config = None
+        provider = get_provider()
+        get_social_schools_news.config = None
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.base_url == "http://localhost:11434/v1"
+    assert provider.model == "llama3.1"
+
+
+def test_get_provider_unknown_raises():
+    """An unrecognized LLM_PROVIDER fails fast with a clear error"""
+    cfg = Config(
+        SCRAPED_WEBSITE_USER="u", SCRAPED_WEBSITE_PASSWORD="p",
+        PUSHBULLET_API_KEYS="Me:t", LLM_PROVIDER="bogus",
+    )
+    with patch('get_social_schools_news.load_config', return_value=cfg):
+        import get_social_schools_news
+        get_social_schools_news.config = None
+        with pytest.raises(RuntimeError, match="Unknown LLM_PROVIDER"):
+            get_provider()
+        get_social_schools_news.config = None
+
+
+def test_openai_compatible_requires_base_url_and_model():
+    """The HTTP provider refuses to construct without base_url and model"""
+    with pytest.raises(RuntimeError, match="LLM_BASE_URL is required"):
+        OpenAICompatibleProvider(base_url="", model="x")
+    with pytest.raises(RuntimeError, match="LLM_MODEL is required"):
+        OpenAICompatibleProvider(base_url="http://x/v1", model="")
+
+
+def test_openai_compatible_complete_returns_content():
+    """A well-formed OpenAI-compatible response yields the message content"""
+    provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m")
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": "  hello  "}}]
+    }
+    with patch('requests.post', return_value=mock_resp) as mock_post:
+        result = provider.complete("prompt text")
+    assert result == "hello"
+    url = mock_post.call_args[0][0]
+    assert url == "http://x/v1/chat/completions"
+
+
+def test_openai_compatible_never_sends_tools():
+    """ADR 0002 regression: the HTTP payload must never include tools/functions"""
+    provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m")
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    with patch('requests.post', return_value=mock_resp) as mock_post:
+        provider.complete("prompt text")
+    payload = json.loads(mock_post.call_args[1]["data"])
+    assert "tools" not in payload
+    assert "functions" not in payload
+    assert payload["stream"] is False
+
+
+def test_openai_compatible_sends_bearer_token_when_key_set():
+    """An API key is sent as a Bearer token; absent key sends no Authorization header"""
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+
+    with_key = OpenAICompatibleProvider(base_url="http://x/v1", model="m", api_key="secret")
+    with patch('requests.post', return_value=mock_resp) as mock_post:
+        with_key.complete("p")
+    assert mock_post.call_args[1]["headers"]["Authorization"] == "Bearer secret"
+
+    no_key = OpenAICompatibleProvider(base_url="http://x/v1", model="m")
+    with patch('requests.post', return_value=mock_resp) as mock_post:
+        no_key.complete("p")
+    assert "Authorization" not in mock_post.call_args[1]["headers"]
+
+
+def test_openai_compatible_raises_on_error_status():
+    """A non-200 status from the endpoint raises RuntimeError"""
+    provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m")
+    mock_resp = Mock()
+    mock_resp.status_code = 401
+    mock_resp.text = "unauthorized"
+    with patch('requests.post', return_value=mock_resp):
+        with pytest.raises(RuntimeError, match="returned status 401"):
+            provider.complete("p")
+
+
+def test_generate_digest_via_openai_compatible_provider():
+    """generate_digest routes through the HTTP provider when configured, not the CLI"""
+    cfg = Config(
+        SCRAPED_WEBSITE_USER="u", SCRAPED_WEBSITE_PASSWORD="p",
+        PUSHBULLET_API_KEYS="Me:t", LLM_PROVIDER="openai_compatible",
+        LLM_BASE_URL="http://localhost:11434/v1", LLM_MODEL="llama3.1",
+    )
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "translated_title": "School Trip",
+        "tldr": "Bring shoes",
+        "action_items": ["15 Aug - bring shoes"],
+        "key_dates": [],
+    })}}]}
+    with patch('get_social_schools_news.load_config', return_value=cfg):
+        import get_social_schools_news
+        get_social_schools_news.config = None
+        with patch('requests.post', return_value=mock_resp) as mock_post, \
+                patch('subprocess.run') as mock_run:
+            result = generate_digest("School Trip", "Body", [])
+        get_social_schools_news.config = None
+    mock_post.assert_called_once()
+    mock_run.assert_not_called()
+    assert isinstance(result, Digest)
+    assert result.translated_title == "School Trip"
+
+
+def test_translation_mode_uses_no_llm_provider(mock_playwright):
+    """DIGEST_ENABLED=false must never build a provider or hit subprocess/HTTP"""
+    cfg = Config(
+        SCRAPED_WEBSITE_USER="u", SCRAPED_WEBSITE_PASSWORD="p",
+        PUSHBULLET_API_KEYS="Me:t", DIGEST_ENABLED=False,
+    )
+    playwright, browser, context, page = mock_playwright
+
+    body_el = Mock()
+    body_el.inner_text.return_value = "Dutch body"
+    title_el = Mock()
+    title_el.inner_text.return_value = "Dutch title"
+
+    def query_selector(selector):
+        if selector == "span[as='div']":
+            return body_el
+        if selector == "h3":
+            return title_el
+        return None
+
+    article = Mock()
+    article.query_selector.side_effect = query_selector
+
+    with patch('get_social_schools_news.load_config', return_value=cfg):
+        import get_social_schools_news
+        get_social_schools_news.config = None
+        with patch('get_social_schools_news.get_provider') as mock_get_provider, \
+                patch('get_social_schools_news.translate', side_effect=lambda t: f"EN:{t}"), \
+                patch('get_social_schools_news.send_notification') as mock_notify, \
+                patch('requests.post') as mock_post, \
+                patch('subprocess.run') as mock_run:
+            process_article_content(playwright, browser, context, article)
+        get_social_schools_news.config = None
+
+    mock_get_provider.assert_not_called()
+    mock_post.assert_not_called()
+    mock_run.assert_not_called()
+    mock_notify.assert_called_once()
 
 
 # =============================================================================
@@ -1462,7 +1641,8 @@ def test_config_missing_translation_language():
             'SCRAPED_WEBSITE_PASSWORD': 'password123',
             'PUSHBULLET_API_KEYS': 'Test:api_key_123'
         }[key])
-        mock_default_section.get = Mock(return_value='en')
+        mock_default_section.get = Mock(
+            side_effect=lambda key, default=None: default)
 
         mock_parser = Mock()
         mock_parser.__getitem__ = Mock(return_value=mock_default_section)

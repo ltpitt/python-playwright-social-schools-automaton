@@ -168,6 +168,65 @@ def test_send_notification_raises_on_http_error():
             send_notification("Test", "Body", "Test:bad_key")
 
 
+def test_send_notification_sends_email_when_configured(mock_config):
+    """Email is sent (in addition to Pushbullet) when EMAIL_RECIPIENTS is set"""
+    mock_config.EMAIL_SENDER = "sender@gmail.com"
+    mock_config.EMAIL_APP_PASSWORD = "app_password"
+    mock_config.EMAIL_RECIPIENTS = "You:you@example.com,Partner:partner@example.com"
+    with patch('requests.post') as mock_post, \
+            patch('smtplib.SMTP_SSL') as mock_smtp:
+        mock_post.return_value.status_code = 200
+        server = mock_smtp.return_value.__enter__.return_value
+        send_notification("Test Title", "Test Body")
+        server.login.assert_called_once_with("sender@gmail.com", "app_password")
+        assert server.send_message.call_count == 2
+        sent_to = [call.args[0]["To"] for call in server.send_message.call_args_list]
+        assert sent_to == ["you@example.com", "partner@example.com"]
+
+
+def test_send_notification_email_only_skips_pushbullet(mock_config):
+    """With no Pushbullet keys but email configured, only email is sent"""
+    mock_config.PUSHBULLET_API_KEYS = ""
+    mock_config.EMAIL_SENDER = "sender@gmail.com"
+    mock_config.EMAIL_APP_PASSWORD = "app_password"
+    mock_config.EMAIL_RECIPIENTS = "You:you@example.com"
+    with patch('requests.post') as mock_post, \
+            patch('smtplib.SMTP_SSL') as mock_smtp:
+        send_notification("Test Title", "Test Body")
+        mock_post.assert_not_called()
+        server = mock_smtp.return_value.__enter__.return_value
+        server.send_message.assert_called_once()
+
+
+def test_send_notification_no_channels_is_noop(mock_config):
+    """With neither Pushbullet nor email configured, nothing is sent"""
+    mock_config.PUSHBULLET_API_KEYS = ""
+    mock_config.EMAIL_RECIPIENTS = ""
+    with patch('requests.post') as mock_post, \
+            patch('smtplib.SMTP_SSL') as mock_smtp:
+        send_notification("Test Title", "Test Body")
+        mock_post.assert_not_called()
+        mock_smtp.assert_not_called()
+
+
+def test_send_notification_email_missing_sender_raises(mock_config):
+    """EMAIL_RECIPIENTS set but EMAIL_SENDER/EMAIL_APP_PASSWORD empty raises for retry"""
+    mock_config.PUSHBULLET_API_KEYS = ""
+    mock_config.EMAIL_SENDER = ""
+    mock_config.EMAIL_APP_PASSWORD = ""
+    mock_config.EMAIL_RECIPIENTS = "You:you@example.com"
+    with patch('smtplib.SMTP_SSL') as mock_smtp:
+        with pytest.raises(ValueError):
+            send_notification("Test Title", "Test Body")
+        mock_smtp.assert_not_called()
+
+
+def test_parse_api_keys_parses_email_recipients():
+    assert _parse_api_keys("You:you@example.com,Partner:p@example.com",
+                           field_name="EMAIL_RECIPIENTS") == {
+        "You": "you@example.com", "Partner": "p@example.com"}
+
+
 def test_process_article_content(mock_playwright, mock_config):
     playwright, browser, context, page = mock_playwright
 
@@ -280,10 +339,12 @@ def test_load_config_with_config_ini(tmp_path):
         mock_default_section.__getitem__ = Mock(side_effect=lambda key: {
             'SCRAPED_WEBSITE_USER': 'user@example.com',
             'SCRAPED_WEBSITE_PASSWORD': 'password123',
-            'PUSHBULLET_API_KEYS': 'Test:api_key_123'
         }[key])
         mock_default_section.get = Mock(
-            side_effect=lambda key, default=None: {'TRANSLATION_LANGUAGE': 'it'}.get(key, default))
+            side_effect=lambda key, default=None: {
+                'PUSHBULLET_API_KEYS': 'Test:api_key_123',
+                'TRANSLATION_LANGUAGE': 'it',
+            }.get(key, default))
 
         mock_parser = Mock()
         mock_parser.__getitem__ = Mock(return_value=mock_default_section)
@@ -1375,6 +1436,8 @@ def test_run_function_success(mock_playwright):
     """Test successful run function execution"""
     playwright, browser, context, page = mock_playwright
     page.url = "https://app.socialschools.eu/home/dashboard"
+    expected_browser = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or \
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
     with patch('get_social_schools_news.login_to_website') as mock_login, \
          patch('get_social_schools_news.process_all_articles') as \
@@ -1385,7 +1448,7 @@ def test_run_function_success(mock_playwright):
 
         playwright.chromium.launch.assert_called_once_with(
             headless=True,
-            executable_path='/usr/bin/chromium-browser'
+            executable_path=expected_browser
         )
         browser.new_context.assert_called_once()
         context.new_page.assert_called_once()

@@ -48,6 +48,28 @@ A single entry (e.g. `PUSHBULLET_API_KEYS = You:your_token_here`) keeps the orig
 
 > We deliberately don't use Pushbullet **channels** for this: channel subscriptions require no approval from the owner, and the `channel-info` API is publicly queryable without authentication — anyone who learns the channel tag can read/subscribe to notifications. Since these notifications can include your child's name, school, and schedule, per-recipient private tokens are the safer choice.
 
+## Notify by email (Gmail)
+
+Not everyone uses Pushbullet, so notifications can also (or instead) be sent by **email** via Gmail. Pushbullet and email are independent: configure either one, or both.
+
+- Leave `PUSHBULLET_API_KEYS` empty to skip Pushbullet.
+- Leave `EMAIL_RECIPIENTS` empty to skip email.
+
+To enable email, set these in `config.ini`:
+
+```ini
+EMAIL_SENDER = your_gmail_address@gmail.com
+EMAIL_APP_PASSWORD = your_gmail_app_password
+EMAIL_RECIPIENTS = You:you@example.com,Partner:partner@example.com
+```
+
+- `EMAIL_SENDER` is the Gmail address the notifications are sent **from**.
+- `EMAIL_APP_PASSWORD` is a Gmail **App Password**, *not* your normal Google password. Enable [2-Step Verification](https://myaccount.google.com/security), then create one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+- `EMAIL_RECIPIENTS` mirrors `PUSHBULLET_API_KEYS`: a comma-separated list of `name:email` pairs (the name is only used in logs). Each recipient is emailed individually, so their address is never exposed to the others. A single entry works too.
+
+Sending assumes Gmail's SMTP server (`smtp.gmail.com`).
+
+
 
 ## Why this exists
 
@@ -93,7 +115,10 @@ Now, we can all sit back, relax, and let this script connect to the school websi
      [DEFAULT]
      SCRAPED_WEBSITE_USER = your.email@example.com   # Your Social Schools login email
      SCRAPED_WEBSITE_PASSWORD = your_password        # Your Social Schools password
-     PUSHBULLET_API_KEYS = You:your_pushbullet_key   # Comma-separated 'name:token' pairs, one per recipient
+     PUSHBULLET_API_KEYS = You:your_pushbullet_key   # Comma-separated 'name:token' pairs (leave empty to use email only)
+     EMAIL_SENDER =                                  # Gmail address to send from (optional, see "Notify by email")
+     EMAIL_APP_PASSWORD =                            # Gmail App Password (optional)
+     EMAIL_RECIPIENTS =                              # Comma-separated 'name:email' pairs (optional)
      TRANSLATION_LANGUAGE = en                       # "en" for English, "it" for Italian, etc.
      DIGEST_ENABLED = true                           # false for plain translation mode
      ```

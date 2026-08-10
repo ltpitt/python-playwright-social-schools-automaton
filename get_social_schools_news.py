@@ -1,10 +1,12 @@
 import argparse
 import os
 import re
+import smtplib
 import subprocess
 import pycurl
 import logging
 import traceback
+from email.message import EmailMessage
 from io import BytesIO
 from datetime import datetime
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -42,9 +44,19 @@ class Config:
     # "Davide:o.abc123,Daniela:o.xyz789"). Works for a single recipient too
     # ("Me:o.abc123"). Each token is a private, per-person Pushbullet access
     # token, so only people you explicitly list here ever receive anything,
-    # and the name lets logs identify who a push went to.
-    PUSHBULLET_API_KEYS: str
+    # and the name lets logs identify who a push went to. Leave empty to
+    # disable Pushbullet and rely solely on email notifications.
+    PUSHBULLET_API_KEYS: str = ""
     TRANSLATION_LANGUAGE: str = "en"
+    # Email notifications via Gmail SMTP. Leave EMAIL_RECIPIENTS empty to
+    # disable email entirely. When set, EMAIL_SENDER and EMAIL_APP_PASSWORD
+    # must both be provided (the app password is a Gmail App Password, not the
+    # account's normal password). EMAIL_RECIPIENTS is a comma-separated list of
+    # 'name:email' pairs, mirroring PUSHBULLET_API_KEYS; each recipient is
+    # emailed individually so their address is never exposed to the others.
+    EMAIL_SENDER: str = ""
+    EMAIL_APP_PASSWORD: str = ""
+    EMAIL_RECIPIENTS: str = ""
     DIGEST_ENABLED: bool = True
     # LLM backend used to generate a Digest. Only consulted when DIGEST_ENABLED
     # is true; Translation mode never touches any of these.
@@ -84,7 +96,10 @@ def load_config() -> Config:
     return Config(
         SCRAPED_WEBSITE_USER=config['DEFAULT']['SCRAPED_WEBSITE_USER'],
         SCRAPED_WEBSITE_PASSWORD=config['DEFAULT']['SCRAPED_WEBSITE_PASSWORD'],
-        PUSHBULLET_API_KEYS=config['DEFAULT']['PUSHBULLET_API_KEYS'],
+        PUSHBULLET_API_KEYS=config['DEFAULT'].get('PUSHBULLET_API_KEYS', '').strip(),
+        EMAIL_SENDER=config['DEFAULT'].get('EMAIL_SENDER', '').strip(),
+        EMAIL_APP_PASSWORD=config['DEFAULT'].get('EMAIL_APP_PASSWORD', '').strip(),
+        EMAIL_RECIPIENTS=config['DEFAULT'].get('EMAIL_RECIPIENTS', '').strip(),
         TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en'),
         DIGEST_ENABLED=config['DEFAULT'].get('DIGEST_ENABLED', 'true').strip().lower() == 'true',
         LLM_PROVIDER=config['DEFAULT'].get('LLM_PROVIDER', 'copilot').strip().lower(),
@@ -117,6 +132,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PROCESSED_ARTICLES_FILE = "processed_articles.json"
+
+# Gmail SMTP over implicit TLS; we assume Gmail as the sending provider.
+EMAIL_SMTP_HOST = "smtp.gmail.com"
+EMAIL_SMTP_PORT = 465
 
 DIGEST_PROMPT_TEMPLATE = (
     "You are writing a brief for a busy parent. Turn the Dutch school message "
@@ -276,11 +295,12 @@ def translate(text, src="nl", dest=None, chunk_size=4900):
     return " ".join(translated_chunks)
 
 
-def _parse_api_keys(raw):
-    """Parse a comma-separated 'name:token' string into an ordered {name: token} dict.
+def _parse_api_keys(raw, field_name="PUSHBULLET_API_KEYS"):
+    """Parse a comma-separated 'name:value' string into an ordered {name: value} dict.
 
-    Raises ValueError if an entry is missing the ':' separator or has an
-    empty name/token, so misconfiguration is caught early instead of
+    Used for both PUSHBULLET_API_KEYS (name:token) and EMAIL_RECIPIENTS
+    (name:email). Raises ValueError if an entry is missing the ':' separator or
+    has an empty name/value, so misconfiguration is caught early instead of
     silently dropping a recipient.
     """
     parsed = {}
@@ -292,17 +312,13 @@ def _parse_api_keys(raw):
         name, token = name.strip(), token.strip()
         if not sep or not name or not token:
             raise ValueError(
-                f"Invalid PUSHBULLET_API_KEYS entry {entry!r}; expected 'name:token'"
+                f"Invalid {field_name} entry {entry!r}; expected 'name:value'"
             )
         parsed[name] = token
     return parsed
 
 
-def send_notification(title, body, api_keys=None):
-    if api_keys is None:
-        api_keys = _parse_api_keys(get_config().PUSHBULLET_API_KEYS)
-    elif isinstance(api_keys, str):
-        api_keys = _parse_api_keys(api_keys)
+def _send_pushbullet(title, body, api_keys):
     logger.info(f"Sending Pushbullet notification with title: {title}")
     logger.debug(f"Notification body:\n{body}")
     params = {"type": "note", "title": title, "body": body}
@@ -318,6 +334,53 @@ def send_notification(title, body, api_keys=None):
         )
         response.raise_for_status()
     logger.info("Pushbullet notification sent")
+
+
+def _send_email(title, body, sender, app_password, recipients):
+    """Send the notification by email via Gmail SMTP, one message per recipient.
+
+    Each recipient is emailed separately so their address is never exposed to
+    the others. Raises if sender/app password are missing or SMTP fails, so a
+    failed send leaves the article unmarked for retry on the next run.
+    """
+    if not sender or not app_password:
+        raise ValueError(
+            "EMAIL_RECIPIENTS is set but EMAIL_SENDER and/or EMAIL_APP_PASSWORD are empty"
+        )
+    logger.info(f"Sending email notification with title: {title}")
+    logger.debug(f"Notification body:\n{body}")
+    with smtplib.SMTP_SSL(EMAIL_SMTP_HOST, EMAIL_SMTP_PORT) as server:
+        server.login(sender, app_password)
+        for name, address in recipients.items():
+            logger.debug(f"Emailing notification to recipient '{name}' <{address}>")
+            message = EmailMessage()
+            message["Subject"] = title
+            message["From"] = sender
+            message["To"] = address
+            message.set_content(body)
+            server.send_message(message)
+    logger.info("Email notification sent")
+
+
+def send_notification(title, body, api_keys=None):
+    cfg = get_config()
+    if api_keys is None:
+        api_keys = _parse_api_keys(cfg.PUSHBULLET_API_KEYS)
+    elif isinstance(api_keys, str):
+        api_keys = _parse_api_keys(api_keys)
+
+    email_recipients = _parse_api_keys(cfg.EMAIL_RECIPIENTS, field_name="EMAIL_RECIPIENTS")
+
+    if not api_keys and not email_recipients:
+        logger.warning(
+            "No notification channels configured; set PUSHBULLET_API_KEYS and/or EMAIL_RECIPIENTS"
+        )
+        return
+
+    if api_keys:
+        _send_pushbullet(title, body, api_keys)
+    if email_recipients:
+        _send_email(title, body, cfg.EMAIL_SENDER, cfg.EMAIL_APP_PASSWORD, email_recipients)
 
 
 def _check_copilot_available():

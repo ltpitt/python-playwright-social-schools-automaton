@@ -290,12 +290,11 @@ def test_send_notification_error(mock_config):
 def test_process_article_content_error(mock_playwright, mock_config):
     playwright, browser, context, page = mock_playwright
 
-    # Mock article with missing content
+    # Missing content should be skipped gracefully instead of crashing the whole run
     article = Mock()
     article.query_selector.return_value = None
 
-    with pytest.raises(AttributeError):
-        process_article_content(playwright, browser, context, article)
+    process_article_content(playwright, browser, context, article)
 
 
 def test_process_article_content_missing_attachments(mock_playwright,
@@ -1313,7 +1312,7 @@ def test_expand_full_text_with_button():
         "button:has-text('Meer weergeven')"
     )
     more_button.click.assert_called_once()
-    article.wait_for_selector.assert_called_once_with("span[as='div']")
+    article.wait_for_selector.assert_any_call("span[as='div']", timeout=10000)
 
 
 def test_expand_full_text_no_button():
@@ -1324,7 +1323,21 @@ def test_expand_full_text_no_button():
     expand_full_text(article)
 
     article.query_selector.assert_called_once()
-    article.wait_for_selector.assert_called_once_with("span[as='div']")
+    article.wait_for_selector.assert_any_call("span[as='div']", timeout=10000)
+
+
+def test_expand_full_text_timeout_is_non_fatal():
+    """A missing or delayed full-text block must not abort the whole run."""
+    article = Mock()
+    article.query_selector.return_value = None
+    article.wait_for_selector.side_effect = [TimeoutError("missing full-text block"), None]
+
+    expand_full_text(article)
+
+    article.query_selector.assert_called_once_with("button:has-text('Meer weergeven')")
+    assert article.wait_for_selector.call_args_list[0].args == ("span[as='div']",)
+    assert article.wait_for_selector.call_args_list[0].kwargs == {"timeout": 10000}
+    assert article.wait_for_selector.call_count == 2
 
 
 def test_process_all_articles_new_article(mock_playwright):
@@ -1436,10 +1449,10 @@ def test_run_function_success(mock_playwright):
     """Test successful run function execution"""
     playwright, browser, context, page = mock_playwright
     page.url = "https://app.socialschools.eu/home/dashboard"
-    expected_browser = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or \
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    expected_browser = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or "/tmp/test-chrome"
 
-    with patch('get_social_schools_news.login_to_website') as mock_login, \
+    with patch('get_social_schools_news.resolve_browser_executable_path', return_value=expected_browser), \
+         patch('get_social_schools_news.login_to_website') as mock_login, \
          patch('get_social_schools_news.process_all_articles') as \
          mock_process, \
          patch('get_social_schools_news._check_copilot_available'):

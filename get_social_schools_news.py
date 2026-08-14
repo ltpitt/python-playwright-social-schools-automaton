@@ -1,6 +1,8 @@
 import argparse
+import glob
 import os
 import re
+import shutil
 import smtplib
 import subprocess
 import pycurl
@@ -26,9 +28,34 @@ def resolve_browser_executable_path():
         env_path,
         "/usr/bin/chromium-browser",
         "/usr/bin/chromium",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
     ]
+
+    for browser_name in (
+        "chromium-browser",
+        "chromium",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+    ):
+        resolved = shutil.which(browser_name)
+        if resolved:
+            candidates.append(resolved)
+
+    for playwright_root in (
+        os.path.expanduser("~/.cache/ms-playwright"),
+        os.path.expanduser("~/.local/share/ms-playwright"),
+    ):
+        if os.path.isdir(playwright_root):
+            candidates.extend(
+                glob.glob(os.path.join(playwright_root, "**", "chrome-linux", "chrome"), recursive=True)
+            )
+            candidates.extend(
+                glob.glob(os.path.join(playwright_root, "**", "chrome-linux", "chrome.exe"), recursive=True)
+            )
 
     for path in candidates:
         if path and os.path.exists(path):
@@ -905,21 +932,85 @@ def process_all_articles(playwright, browser, context, page):
 
 
 def expand_full_text(article):
+    """Expand article text if the UI offers a 'Meer weergeven' control.
+
+    Some articles may not render the expected full-text container at all, or the
+    content may already be in the visible DOM without the legacy selector. In
+    those cases we should log and continue rather than aborting the entire run.
+    """
     try:
         more_button = article.query_selector("button:has-text('Meer weergeven')")
         if more_button:
-            more_button.click()
+            logger.info("Clicking 'Meer weergeven' to expand article text")
+            try:
+                more_button.click()
+            except Exception as e:
+                logger.warning(f"Could not click 'Meer weergeven': {e}")
 
-        article.wait_for_selector("span[as='div']")
+        try:
+            article.wait_for_selector("span[as='div']", timeout=10000)
+            return
+        except Exception:
+            logger.warning(
+                "Legacy full-text selector not found within timeout; trying a more tolerant fallback "
+                "before giving up."
+            )
+
+        try:
+            article.wait_for_selector(
+                "[data-testid='article-body'], [data-test='article-body'], div[role='article'] span, p",
+                timeout=10000,
+            )
+            return
+        except Exception as fallback_error:
+            logger.warning(
+                "Full-text content could not be located with the legacy or fallback selectors: "
+                f"{fallback_error}"
+            )
+            return
     except Exception as e:
         logger.error(f"Error expanding full text: {str(e)}")
         logger.error(f"Stack trace: {traceback.format_exc()}")
-        raise
+        # Some articles may legitimately not expose a full-text container. Do not
+        # crash the whole run; processors can still inspect the visible body and fail
+        # gracefully per article.
+        return
+
+
+def _read_visible_article_body(article):
+    """Return the first readable body element or raise a helpful ValueError."""
+    selectors = [
+        "span[as='div']",
+        "[data-testid='article-body']",
+        "[data-test='article-body']",
+        "div[role='article'] span",
+        "p",
+        "div",
+    ]
+
+    for selector in selectors:
+        element = article.query_selector(selector)
+        if not element:
+            continue
+        try:
+            text = element.inner_text()
+            if text and text.strip():
+                return text
+        except Exception as exc:
+            logger.debug(f"Selector {selector!r} did not yield text: {exc}")
+
+    raise ValueError("No readable article body found in the visible DOM")
 
 
 def process_article_content(playwright, browser, context, article):
-    body = article.query_selector("span[as='div']").inner_text()
-    title = article.query_selector("h3").inner_text()
+    try:
+        body = _read_visible_article_body(article)
+    except ValueError as exc:
+        logger.warning(f"Skipping article with no readable body: {exc}")
+        return
+
+    title_el = article.query_selector("h3")
+    title = title_el.inner_text() if title_el else "(no title)"
 
     if not get_config().DIGEST_ENABLED:
         # Translation-only mode: no LLM, no attachment extraction

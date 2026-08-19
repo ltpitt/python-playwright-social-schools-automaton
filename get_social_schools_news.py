@@ -856,25 +856,41 @@ def run(playwright):
 
 def login_to_website(page):
     try:
-        page.goto("https://app.socialschools.eu/home")
-        page.wait_for_load_state("networkidle")
+        # The application redirects to a separate authentication host after its
+        # initial shell loads. Waiting for network idle can finish before that
+        # asynchronous redirect on slower devices, such as a Raspberry Pi.
+        page.goto("https://app.socialschools.eu/home", wait_until="domcontentloaded")
 
         username_field = page.locator("#username")
-        if not username_field.is_visible():
-            raise Exception("Username field not found")
-        page.fill("#username", get_config().SCRAPED_WEBSITE_USER)
+        try:
+            username_field.wait_for(state="visible", timeout=60000)
+        except PlaywrightTimeoutError as error:
+            raise Exception(
+                f"Username field not found after waiting for the login page (URL: {page.url})"
+            ) from error
+        username_field.fill(get_config().SCRAPED_WEBSITE_USER)
 
         password_field = page.locator("#Password")
-        if not password_field.is_visible():
-            raise Exception("Password field not found")
-        page.fill("#Password", get_config().SCRAPED_WEBSITE_PASSWORD)
+        try:
+            password_field.wait_for(state="visible", timeout=60000)
+        except PlaywrightTimeoutError as error:
+            raise Exception(
+                f"Password field not found after waiting for the login page (URL: {page.url})"
+            ) from error
+        password_field.fill(get_config().SCRAPED_WEBSITE_PASSWORD)
 
-        page.press("#Password", "Enter")
+        password_field.press("Enter")
 
         try:
-            page.wait_for_load_state("networkidle", timeout=30000)
-        except PlaywrightTimeoutError:
-            raise
+            page.wait_for_url(
+                "https://app.socialschools.eu/home**",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+        except PlaywrightTimeoutError as error:
+            raise Exception(
+                f"Login did not return to the Social Schools home page (URL: {page.url})"
+            ) from error
     except Exception as e:
         logger.error(f"Error during login: {str(e)}")
         logger.error(f"Stack trace: {traceback.format_exc()}")
@@ -884,6 +900,12 @@ def login_to_website(page):
 def process_all_articles(playwright, browser, context, page):
     try:
         logger.debug("Looking for feed element")
+        try:
+            page.locator("div[role='feed']").wait_for(state="visible", timeout=60000)
+        except PlaywrightTimeoutError as error:
+            raise Exception(
+                f"Feed element did not load on the Social Schools home page (URL: {page.url})"
+            ) from error
         feed = page.query_selector("div[role='feed']")
         if not feed:
             logger.error("Feed element not found")

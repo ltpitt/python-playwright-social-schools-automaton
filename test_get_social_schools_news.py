@@ -3,6 +3,7 @@ import pytest
 import os
 import sys
 from unittest.mock import Mock, patch, mock_open
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 # Add the current directory to Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -1263,11 +1264,19 @@ def test_login_to_website_success(mock_playwright):
 
         login_to_website(page)
 
-        page.goto.assert_called_once_with("https://app.socialschools.eu/home")
-        page.wait_for_load_state.assert_called()
-        page.fill.assert_any_call("#username", "test@example.com")
-        page.fill.assert_any_call("#Password", "testpass")
-        page.press.assert_called_once_with("#Password", "Enter")
+        page.goto.assert_called_once_with(
+            "https://app.socialschools.eu/home", wait_until="domcontentloaded"
+        )
+        username_field.wait_for.assert_called_once_with(state="visible", timeout=60000)
+        username_field.fill.assert_called_once_with("test@example.com")
+        password_field.wait_for.assert_called_once_with(state="visible", timeout=60000)
+        password_field.fill.assert_called_once_with("testpass")
+        password_field.press.assert_called_once_with("Enter")
+        page.wait_for_url.assert_called_once_with(
+            "https://app.socialschools.eu/home**",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
 
 
 def test_login_to_website_username_field_not_found(mock_playwright):
@@ -1275,7 +1284,7 @@ def test_login_to_website_username_field_not_found(mock_playwright):
     playwright, browser, context, page = mock_playwright
 
     username_field = Mock()
-    username_field.is_visible.return_value = False
+    username_field.wait_for.side_effect = PlaywrightTimeoutError("not found")
     page.locator.return_value = username_field
 
     with pytest.raises(Exception, match="Username field not found"):
@@ -1287,9 +1296,8 @@ def test_login_to_website_password_field_not_found(mock_playwright):
     playwright, browser, context, page = mock_playwright
 
     username_field = Mock()
-    username_field.is_visible.return_value = True
     password_field = Mock()
-    password_field.is_visible.return_value = False
+    password_field.wait_for.side_effect = PlaywrightTimeoutError("not found")
 
     page.locator.side_effect = lambda selector: {
         "#username": username_field,
@@ -1363,6 +1371,11 @@ def test_process_all_articles_new_article(mock_playwright):
          patch('get_social_schools_news.process_article_content') as mock_process:
 
         process_all_articles(playwright, browser, context, page)
+
+        page.locator.assert_called_once_with("div[role='feed']")
+        page.locator.return_value.wait_for.assert_called_once_with(
+            state="visible", timeout=60000
+        )
 
         mock_load.assert_called()
         mock_expand.assert_called_once_with(article)

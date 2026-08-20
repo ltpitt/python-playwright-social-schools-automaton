@@ -37,7 +37,12 @@ from get_social_schools_news import (  # noqa: E402
     _COPILOT_TOOL_FREE_ARGS,
     _dict_to_digest,
     _parse_api_keys,
+    _parse_recipients,
+    Recipient,
+    get_requested_languages,
+    send_multilingual_notification,
     _extract_action_hints,
+    notify_admin,
     get_provider,
     CopilotCliProvider,
     OpenAICompatibleProvider,
@@ -56,6 +61,7 @@ def mock_config():
     )
     import get_social_schools_news
     get_social_schools_news.config = None  # reset cached config before each test
+    get_social_schools_news._translation_cache.clear()
     with patch('get_social_schools_news.load_config',
                return_value=test_config):
         yield test_config
@@ -228,6 +234,101 @@ def test_parse_api_keys_parses_email_recipients():
         "You": "you@example.com", "Partner": "p@example.com"}
 
 
+def test_parse_recipients_defaults_to_translation_language(mock_config):
+    """Entries without a ':language' suffix fall back to TRANSLATION_LANGUAGE"""
+    mock_config.TRANSLATION_LANGUAGE = "en"
+    parsed = _parse_recipients("Davide:token1,Daniela:token2")
+    assert parsed["Davide"].value == "token1"
+    assert parsed["Davide"].language == "en"
+    assert parsed["Daniela"].language == "en"
+
+
+def test_parse_recipients_honors_per_recipient_language(mock_config):
+    parsed = _parse_recipients("Davide:token1:it,Daniela:token2:en")
+    assert parsed["Davide"] == Recipient(value="token1", language="it")
+    assert parsed["Daniela"] == Recipient(value="token2", language="en")
+
+
+def test_parse_recipients_rejects_empty_language():
+    with pytest.raises(ValueError):
+        _parse_recipients("Davide:token1:")
+
+
+def test_parse_recipients_rejects_too_many_colons():
+    with pytest.raises(ValueError):
+        _parse_recipients("Davide:token1:it:extra")
+
+
+def test_get_requested_languages_combines_pushbullet_and_email(mock_config):
+    mock_config.PUSHBULLET_API_KEYS = "Davide:token1:it"
+    mock_config.EMAIL_RECIPIENTS = "Daniela:d@example.com:en"
+    assert get_requested_languages() == {"it", "en"}
+
+
+def test_get_requested_languages_falls_back_to_translation_language(mock_config):
+    mock_config.PUSHBULLET_API_KEYS = ""
+    mock_config.EMAIL_RECIPIENTS = ""
+    mock_config.TRANSLATION_LANGUAGE = "fr"
+    assert get_requested_languages() == {"fr"}
+
+
+def test_send_multilingual_notification_routes_each_recipient_to_its_language(mock_config):
+    """Each recipient only receives the content generated for their own language"""
+    mock_config.PUSHBULLET_API_KEYS = "Davide:token_it:it,Daniela:token_en:en"
+    mock_config.EMAIL_SENDER = "sender@gmail.com"
+    mock_config.EMAIL_APP_PASSWORD = "app_password"
+    mock_config.EMAIL_RECIPIENTS = "Mamma:mamma@example.com:it"
+
+    content = {
+        "it": ("Titolo", "Corpo"),
+        "en": ("Title", "Body"),
+    }
+    with patch('requests.post') as mock_post, \
+            patch('smtplib.SMTP_SSL') as mock_smtp:
+        mock_post.return_value.status_code = 200
+        send_multilingual_notification(content)
+
+        pushed = {
+            call.kwargs["headers"]["Authorization"]: json.loads(call.kwargs["data"])
+            for call in mock_post.call_args_list
+        }
+        assert pushed["Bearer token_it"]["title"] == "Titolo"
+        assert pushed["Bearer token_en"]["title"] == "Title"
+
+        server = mock_smtp.return_value.__enter__.return_value
+        server.send_message.assert_called_once()
+        sent_message = server.send_message.call_args.args[0]
+        assert sent_message["Subject"] == "Titolo"
+        assert sent_message["To"] == "mamma@example.com"
+
+
+def test_send_multilingual_notification_skips_language_without_content(mock_config):
+    """A configured language missing from content_by_language is skipped, not sent empty"""
+    mock_config.PUSHBULLET_API_KEYS = "Davide:token_it:it"
+    with patch('requests.post') as mock_post:
+        send_multilingual_notification({})
+        mock_post.assert_not_called()
+
+
+def test_translate_caches_identical_text_and_language(mock_config):
+    """Repeated translate() calls for the same text+language reuse the cached result"""
+    with patch('deep_translator.GoogleTranslator.translate') as mock_translate:
+        mock_translate.return_value = "Vertaald"
+        first = translate("Original text", dest="nl")
+        second = translate("Original text", dest="nl")
+        assert first == second == "Vertaald"
+        mock_translate.assert_called_once()
+
+
+def test_translate_does_not_reuse_cache_across_languages(mock_config):
+    """The same text translated into a different language triggers a fresh call"""
+    with patch('deep_translator.GoogleTranslator.translate') as mock_translate:
+        mock_translate.side_effect = ["Vertaald", "Translated"]
+        translate("Original text", dest="nl")
+        translate("Original text", dest="en")
+        assert mock_translate.call_count == 2
+
+
 def test_process_article_content(mock_playwright, mock_config):
     playwright, browser, context, page = mock_playwright
 
@@ -237,7 +338,7 @@ def test_process_article_content(mock_playwright, mock_config):
     mock_query_selector.inner_text.return_value = "Test Content"
     article.query_selector_all.return_value = []
 
-    with patch('get_social_schools_news.send_notification') as mock_notify, \
+    with patch('get_social_schools_news.send_multilingual_notification') as mock_notify, \
          patch('get_social_schools_news.generate_digest') as mock_digest:
         mock_digest.return_value = Digest(
             translated_title="Translated Title",
@@ -249,11 +350,13 @@ def test_process_article_content(mock_playwright, mock_config):
         process_article_content(playwright, browser, context, article)
 
         mock_digest.assert_called_once()
-        mock_notify.assert_called_once_with(
-            title="Translated Title",
-            body="Short summary\n\nNo action needed\n\n"
-                 "To find this post in Social Schools, look for: \"Test Content\"",
-        )
+        mock_notify.assert_called_once_with({
+            "en": (
+                "Translated Title",
+                "Short summary\n\nNo action needed\n\n"
+                "To find this post in Social Schools, look for: \"Test Content\"",
+            ),
+        })
 
 
 def test_load_processed_articles_error(tmp_path):
@@ -308,7 +411,7 @@ def test_process_article_content_missing_attachments(mock_playwright,
     mock_query_selector.inner_text.return_value = "Test Content"
     article.query_selector_all.return_value = []
 
-    with patch('get_social_schools_news.send_notification') as mock_notify, \
+    with patch('get_social_schools_news.send_multilingual_notification') as mock_notify, \
          patch('get_social_schools_news.generate_digest') as mock_digest:
         mock_digest.return_value = Digest(
             translated_title="Translated Title",
@@ -319,12 +422,14 @@ def test_process_article_content_missing_attachments(mock_playwright,
 
         process_article_content(playwright, browser, context, article)
 
-        mock_digest.assert_called_once_with("Test Content", "Test Content", [])
-        mock_notify.assert_called_once_with(
-            title="Translated Title",
-            body="Short summary\n\nNo action needed\n\n"
-                 "To find this post in Social Schools, look for: \"Test Content\"",
-        )
+        mock_digest.assert_called_once_with("Test Content", "Test Content", [], language="en")
+        mock_notify.assert_called_once_with({
+            "en": (
+                "Translated Title",
+                "Short summary\n\nNo action needed\n\n"
+                "To find this post in Social Schools, look for: \"Test Content\"",
+            ),
+        })
 
 
 # =============================================================================
@@ -1073,8 +1178,8 @@ def test_translation_mode_uses_no_llm_provider(mock_playwright):
         import get_social_schools_news
         get_social_schools_news.config = None
         with patch('get_social_schools_news.get_provider') as mock_get_provider, \
-                patch('get_social_schools_news.translate', side_effect=lambda t: f"EN:{t}"), \
-                patch('get_social_schools_news.send_notification') as mock_notify, \
+                patch('get_social_schools_news.translate', side_effect=lambda t, dest=None: f"EN:{t}"), \
+                patch('get_social_schools_news.send_multilingual_notification') as mock_notify, \
                 patch('requests.post') as mock_post, \
                 patch('subprocess.run') as mock_run:
             process_article_content(playwright, browser, context, article)
@@ -1450,7 +1555,7 @@ def test_process_all_articles_continues_on_error(mock_playwright):
          patch('get_social_schools_news.save_processed_article') as mock_save, \
          patch('get_social_schools_news.expand_full_text'), \
          patch('get_social_schools_news.process_article_content',
-               side_effect=[RuntimeError("Digest failed"), None]) as mock_process:
+               side_effect=[RuntimeError("Digest failed"), True]) as mock_process:
 
         process_all_articles(playwright, browser, context, page)
 
@@ -1578,7 +1683,7 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
         "a[href*='.docx']": [docx_link],
     }.get(selector, [])
 
-    with patch('get_social_schools_news.send_notification') as mock_notify, \
+    with patch('get_social_schools_news.send_multilingual_notification') as mock_notify, \
          patch('get_social_schools_news.generate_digest') as mock_digest, \
          patch('get_social_schools_news.process_pdf_links') as mock_pdf, \
          patch('get_social_schools_news.process_docx_links') as mock_docx:
@@ -1610,13 +1715,16 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
             [
                 Attachment(filename="doc.pdf", url="http://example.com/doc.pdf", filetype="pdf", text="PDF text"),
                 Attachment(filename="doc.docx", url="http://example.com/doc.docx", filetype="docx", text="DOCX text"),
-            ]
+            ],
+            language="en",
         )
-        mock_notify.assert_called_once_with(
-            title="Translated Title",
-            body="Action Items:\n\u25b8 15 Aug - action\n\n"
-                 "To find this post in Social Schools, look for: \"Test Title\"",
-        )
+        mock_notify.assert_called_once_with({
+            "en": (
+                "Translated Title",
+                "Action Items:\n\u25b8 15 Aug - action\n\n"
+                "To find this post in Social Schools, look for: \"Test Title\"",
+            ),
+        })
 
 
 # =============================================================================
@@ -1656,7 +1764,7 @@ def test_process_article_content_digest_disabled(mock_playwright, mock_config):
 
     mock_config.DIGEST_ENABLED = False
 
-    with patch('get_social_schools_news.send_notification') as mock_notify, \
+    with patch('get_social_schools_news.send_multilingual_notification') as mock_notify, \
          patch('get_social_schools_news.translate', return_value="Translated") as mock_translate, \
          patch('get_social_schools_news.generate_digest') as mock_digest:
 
@@ -1664,7 +1772,7 @@ def test_process_article_content_digest_disabled(mock_playwright, mock_config):
 
         mock_digest.assert_not_called()
         assert mock_translate.call_count == 2  # title + body
-        mock_notify.assert_called_once_with(title="Translated", body="Translated")
+        mock_notify.assert_called_once_with({"en": ("Translated", "Translated")})
 
 
 def test_check_copilot_available_success():
@@ -1741,3 +1849,137 @@ def test_config_missing_translation_language():
             result = load_config()
 
         assert result.TRANSLATION_LANGUAGE == 'en'
+
+
+# --- Admin alerting ----------------------------------------------------------
+
+
+def _admin_config(**overrides):
+    import get_social_schools_news
+    cfg = Config(
+        SCRAPED_WEBSITE_USER="u",
+        SCRAPED_WEBSITE_PASSWORD="p",
+        PUSHBULLET_API_KEYS="Test:test_api_key",
+        EMAIL_SENDER="sender@example.com",
+        EMAIL_APP_PASSWORD="app_password",
+        **overrides,
+    )
+    get_social_schools_news.config = cfg
+    return cfg
+
+
+def test_notify_admin_noop_when_unconfigured():
+    _admin_config()
+    with patch('get_social_schools_news._send_pushbullet') as mock_push, \
+         patch('get_social_schools_news._send_email') as mock_email:
+        notify_admin("Something broke")
+    mock_push.assert_not_called()
+    mock_email.assert_not_called()
+
+
+def test_notify_admin_sends_to_both_channels():
+    _admin_config(ADMIN_PUSHBULLET_API_KEY="o.admin", ADMIN_EMAIL="admin@example.com")
+    with patch('get_social_schools_news._send_pushbullet') as mock_push, \
+         patch('get_social_schools_news._send_email') as mock_email:
+        notify_admin("Login failed", "extra detail", exc=ValueError("boom"))
+
+    title, body, keys = mock_push.call_args[0]
+    assert title == "[Social Schools admin] Login failed"
+    assert "extra detail" in body
+    assert "ValueError: boom" in body
+    assert keys == {"admin": "o.admin"}
+
+    email_title, email_body, sender, password, recipients = mock_email.call_args[0]
+    assert email_title == title
+    assert recipients == {"admin": "admin@example.com"}
+    assert sender == "sender@example.com"
+    assert password == "app_password"
+    assert "extra detail" in email_body
+
+
+def test_notify_admin_never_raises_when_channel_fails():
+    _admin_config(ADMIN_PUSHBULLET_API_KEY="o.admin", ADMIN_EMAIL="admin@example.com")
+    with patch('get_social_schools_news._send_pushbullet', side_effect=RuntimeError("push down")), \
+         patch('get_social_schools_news._send_email', side_effect=RuntimeError("smtp down")) as mock_email:
+        notify_admin("Digest degraded")
+    # Email is still attempted even though Pushbullet blew up first.
+    mock_email.assert_called_once()
+
+
+def test_process_article_content_returns_false_when_body_unreadable():
+    article = Mock()
+    article.query_selector.return_value = None
+    article.query_selector_all.return_value = []
+
+    with patch('get_social_schools_news.notify_admin') as mock_admin, \
+         patch('get_social_schools_news.send_notification') as mock_send:
+        result = process_article_content(Mock(), Mock(), Mock(), article)
+
+    assert result is False
+    mock_send.assert_not_called()
+    mock_admin.assert_called_once()
+
+
+def test_process_all_articles_skips_save_when_not_fully_successful(mock_playwright):
+    playwright, browser, context, page = mock_playwright
+
+    feed = Mock()
+    article = Mock()
+    title_el = Mock()
+    title_el.inner_text.return_value = "Title"
+    article.get_attribute.return_value = "article_1"
+    article.query_selector.return_value = title_el
+
+    page.query_selector.return_value = feed
+    feed.query_selector_all.return_value = [article]
+
+    with patch('get_social_schools_news.load_processed_articles', return_value=[]), \
+         patch('get_social_schools_news.save_processed_article') as mock_save, \
+         patch('get_social_schools_news.expand_full_text'), \
+         patch('get_social_schools_news.process_article_content', return_value=False):
+
+        process_all_articles(playwright, browser, context, page)
+
+    mock_save.assert_not_called()
+
+
+def test_process_all_articles_alerts_admin_on_article_failure(mock_playwright):
+    playwright, browser, context, page = mock_playwright
+
+    feed = Mock()
+    article = Mock()
+    title_el = Mock()
+    title_el.inner_text.return_value = "Title"
+    article.get_attribute.return_value = "article_1"
+    article.query_selector.return_value = title_el
+
+    page.query_selector.return_value = feed
+    feed.query_selector_all.return_value = [article]
+
+    with patch('get_social_schools_news.load_processed_articles', return_value=[]), \
+         patch('get_social_schools_news.save_processed_article') as mock_save, \
+         patch('get_social_schools_news.expand_full_text'), \
+         patch('get_social_schools_news.notify_admin') as mock_admin, \
+         patch('get_social_schools_news.process_article_content',
+               side_effect=RuntimeError("Digest failed")):
+
+        process_all_articles(playwright, browser, context, page)
+
+    mock_save.assert_not_called()
+    mock_admin.assert_called_once()
+
+
+def test_load_config_reads_admin_settings(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.ini"
+    config_file.write_text(
+        "[DEFAULT]\n"
+        "SCRAPED_WEBSITE_USER = u\n"
+        "SCRAPED_WEBSITE_PASSWORD = p\n"
+        "ADMIN_PUSHBULLET_API_KEY = o.admin\n"
+        "ADMIN_EMAIL = admin@example.com\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    result = load_config()
+
+    assert result.ADMIN_PUSHBULLET_API_KEY == "o.admin"
+    assert result.ADMIN_EMAIL == "admin@example.com"

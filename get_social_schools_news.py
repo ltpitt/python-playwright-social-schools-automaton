@@ -67,23 +67,33 @@ def resolve_browser_executable_path():
 class Config:
     SCRAPED_WEBSITE_USER: str
     SCRAPED_WEBSITE_PASSWORD: str
-    # Comma-separated 'name:token' pairs, one per Pushbullet recipient (e.g.
-    # "Davide:o.abc123,Daniela:o.xyz789"). Works for a single recipient too
-    # ("Me:o.abc123"). Each token is a private, per-person Pushbullet access
-    # token, so only people you explicitly list here ever receive anything,
-    # and the name lets logs identify who a push went to. Leave empty to
-    # disable Pushbullet and rely solely on email notifications.
+    # Comma-separated 'name:token[:language]' pairs, one per Pushbullet
+    # recipient (e.g. "Davide:o.abc123:it,Daniela:o.xyz789:en"). Works for a
+    # single recipient too ("Me:o.abc123"). Each token is a private,
+    # per-person Pushbullet access token, so only people you explicitly list
+    # here ever receive anything, and the name lets logs identify who a push
+    # went to. The optional trailing ':language' overrides TRANSLATION_LANGUAGE
+    # for that recipient only; omit it to use TRANSLATION_LANGUAGE. Leave
+    # empty to disable Pushbullet and rely solely on email notifications.
     PUSHBULLET_API_KEYS: str = ""
     TRANSLATION_LANGUAGE: str = "en"
     # Email notifications via Gmail SMTP. Leave EMAIL_RECIPIENTS empty to
     # disable email entirely. When set, EMAIL_SENDER and EMAIL_APP_PASSWORD
     # must both be provided (the app password is a Gmail App Password, not the
     # account's normal password). EMAIL_RECIPIENTS is a comma-separated list of
-    # 'name:email' pairs, mirroring PUSHBULLET_API_KEYS; each recipient is
-    # emailed individually so their address is never exposed to the others.
+    # 'name:email[:language]' pairs, mirroring PUSHBULLET_API_KEYS; each
+    # recipient is emailed individually so their address is never exposed to
+    # the others.
     EMAIL_SENDER: str = ""
     EMAIL_APP_PASSWORD: str = ""
     EMAIL_RECIPIENTS: str = ""
+    # Admin channel: receives every error/problem the run hits, including ones
+    # that are invisible to parents (login failures, attachment extraction
+    # errors, degraded digests). Both are optional and independent; leave both
+    # empty to disable admin alerting. ADMIN_EMAIL reuses EMAIL_SENDER /
+    # EMAIL_APP_PASSWORD for delivery.
+    ADMIN_PUSHBULLET_API_KEY: str = ""
+    ADMIN_EMAIL: str = ""
     DIGEST_ENABLED: bool = True
     # LLM backend used to generate a Digest. Only consulted when DIGEST_ENABLED
     # is true; Translation mode never touches any of these.
@@ -127,6 +137,8 @@ def load_config() -> Config:
         EMAIL_SENDER=config['DEFAULT'].get('EMAIL_SENDER', '').strip(),
         EMAIL_APP_PASSWORD=config['DEFAULT'].get('EMAIL_APP_PASSWORD', '').strip(),
         EMAIL_RECIPIENTS=config['DEFAULT'].get('EMAIL_RECIPIENTS', '').strip(),
+        ADMIN_PUSHBULLET_API_KEY=config['DEFAULT'].get('ADMIN_PUSHBULLET_API_KEY', '').strip(),
+        ADMIN_EMAIL=config['DEFAULT'].get('ADMIN_EMAIL', '').strip(),
         TRANSLATION_LANGUAGE=config['DEFAULT'].get('TRANSLATION_LANGUAGE', 'en'),
         DIGEST_ENABLED=config['DEFAULT'].get('DIGEST_ENABLED', 'true').strip().lower() == 'true',
         LLM_PROVIDER=config['DEFAULT'].get('LLM_PROVIDER', 'copilot').strip().lower(),
@@ -244,6 +256,7 @@ def save_processed_article(article_id):
         return False
     except Exception as e:
         logger.error(f"Error saving processed article: {e}")
+        notify_admin("Could not persist processed article state", f"Article: {article_id}", exc=e)
         return False
 
 
@@ -311,38 +324,89 @@ def extract_text(pdf_path):
     return text
 
 
+_translation_cache = {}
+
+
 def translate(text, src="nl", dest=None, chunk_size=4900):
     if dest is None:
         dest = get_config().TRANSLATION_LANGUAGE
+    cache_key = (text, src, dest)
+    if cache_key in _translation_cache:
+        logger.debug(f"Translation cache hit ({src} -> {dest}); reusing previous result")
+        return _translation_cache[cache_key]
     logger.info(f"Translating text from {src} to {dest}")
     translator = GoogleTranslator(source=src, target=dest)
     chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
     translated_chunks = [translator.translate(chunk) for chunk in chunks]
     logger.info("Translation complete")
-    return " ".join(translated_chunks)
+    result = " ".join(translated_chunks)
+    _translation_cache[cache_key] = result
+    return result
 
 
-def _parse_api_keys(raw, field_name="PUSHBULLET_API_KEYS"):
-    """Parse a comma-separated 'name:value' string into an ordered {name: value} dict.
+@dataclass
+class Recipient:
+    value: str  # Pushbullet token or email address
+    language: str
 
-    Used for both PUSHBULLET_API_KEYS (name:token) and EMAIL_RECIPIENTS
-    (name:email). Raises ValueError if an entry is missing the ':' separator or
-    has an empty name/value, so misconfiguration is caught early instead of
-    silently dropping a recipient.
+
+def _parse_recipients(raw, field_name="PUSHBULLET_API_KEYS", default_language=None):
+    """Parse a comma-separated 'name:value[:language]' string into {name: Recipient}.
+
+    Used for both PUSHBULLET_API_KEYS (name:token[:language]) and
+    EMAIL_RECIPIENTS (name:email[:language]). The trailing ':language' is
+    optional and defaults to TRANSLATION_LANGUAGE, so existing 'name:value'
+    entries keep working unchanged. Raises ValueError if an entry is missing
+    the ':' separator or has an empty name/value/language, so misconfiguration
+    is caught early instead of silently dropping a recipient.
     """
+    if default_language is None:
+        default_language = get_config().TRANSLATION_LANGUAGE
     parsed = {}
     for entry in raw.split(","):
         entry = entry.strip()
         if not entry:
             continue
-        name, sep, token = entry.partition(":")
-        name, token = name.strip(), token.strip()
-        if not sep or not name or not token:
+        parts = entry.split(":")
+        if len(parts) == 2:
+            name, value = parts
+            language = default_language
+        elif len(parts) == 3:
+            name, value, language = parts
+        else:
             raise ValueError(
-                f"Invalid {field_name} entry {entry!r}; expected 'name:value'"
+                f"Invalid {field_name} entry {entry!r}; expected 'name:value' or 'name:value:language'"
             )
-        parsed[name] = token
+        name, value, language = name.strip(), value.strip(), language.strip()
+        if not name or not value or not language:
+            raise ValueError(
+                f"Invalid {field_name} entry {entry!r}; expected 'name:value' or 'name:value:language'"
+            )
+        parsed[name] = Recipient(value=value, language=language)
     return parsed
+
+
+def _parse_api_keys(raw, field_name="PUSHBULLET_API_KEYS"):
+    """Parse a comma-separated 'name:value' string into an ordered {name: value} dict.
+
+    Backward-compatible view over _parse_recipients() that drops the
+    per-recipient language, for callers that send identical content to
+    everyone regardless of language.
+    """
+    return {name: recipient.value for name, recipient in _parse_recipients(raw, field_name).items()}
+
+
+def get_requested_languages():
+    """Return the set of languages actually requested by configured recipients.
+
+    Falls back to {TRANSLATION_LANGUAGE} when no recipients are configured, so
+    content generation never runs for a language nobody asked for.
+    """
+    cfg = get_config()
+    pb_recipients = _parse_recipients(cfg.PUSHBULLET_API_KEYS)
+    email_recipients = _parse_recipients(cfg.EMAIL_RECIPIENTS, field_name="EMAIL_RECIPIENTS")
+    languages = {r.language for r in pb_recipients.values()} | {r.language for r in email_recipients.values()}
+    return languages or {cfg.TRANSLATION_LANGUAGE}
 
 
 def _send_pushbullet(title, body, api_keys):
@@ -402,12 +466,95 @@ def send_notification(title, body, api_keys=None):
         logger.warning(
             "No notification channels configured; set PUSHBULLET_API_KEYS and/or EMAIL_RECIPIENTS"
         )
+        notify_admin(
+            "No notification channels configured",
+            "Set PUSHBULLET_API_KEYS and/or EMAIL_RECIPIENTS; nobody is being notified.",
+        )
         return
 
     if api_keys:
         _send_pushbullet(title, body, api_keys)
     if email_recipients:
         _send_email(title, body, cfg.EMAIL_SENDER, cfg.EMAIL_APP_PASSWORD, email_recipients)
+
+
+def send_multilingual_notification(content_by_language):
+    """Send localized content to each recipient in their own configured language.
+
+    content_by_language maps language code -> (title, body). Recipients
+    (Pushbullet and email alike) are grouped by their configured language
+    (falling back to TRANSLATION_LANGUAGE) and each group only ever receives
+    the content for its own language — a language that's missing from
+    content_by_language is simply skipped, since nothing was generated for it.
+    """
+    cfg = get_config()
+    pb_recipients = _parse_recipients(cfg.PUSHBULLET_API_KEYS)
+    email_recipients = _parse_recipients(cfg.EMAIL_RECIPIENTS, field_name="EMAIL_RECIPIENTS")
+
+    if not pb_recipients and not email_recipients:
+        logger.warning(
+            "No notification channels configured; set PUSHBULLET_API_KEYS and/or EMAIL_RECIPIENTS"
+        )
+        notify_admin(
+            "No notification channels configured",
+            "Set PUSHBULLET_API_KEYS and/or EMAIL_RECIPIENTS; nobody is being notified.",
+        )
+        return
+
+    languages = {r.language for r in pb_recipients.values()} | {r.language for r in email_recipients.values()}
+    for language in languages:
+        if language not in content_by_language:
+            logger.warning(f"No content generated for language '{language}'; skipping its recipients")
+            continue
+        title, body = content_by_language[language]
+        lang_pb_keys = {name: r.value for name, r in pb_recipients.items() if r.language == language}
+        lang_email_recipients = {name: r.value for name, r in email_recipients.items() if r.language == language}
+        if lang_pb_keys:
+            _send_pushbullet(title, body, lang_pb_keys)
+        if lang_email_recipients:
+            _send_email(title, body, cfg.EMAIL_SENDER, cfg.EMAIL_APP_PASSWORD, lang_email_recipients)
+
+
+def _format_admin_alert(summary, detail=None, exc=None):
+    sections = [summary]
+    if detail:
+        sections.append(str(detail))
+    if exc is not None:
+        sections.append(f"{type(exc).__name__}: {exc}")
+        trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
+        if trace:
+            sections.append(trace)
+    return "\n\n".join(sections)
+
+
+def notify_admin(summary, detail=None, exc=None):
+    """Best-effort alert to the admin channel about a problem in this run.
+
+    Never raises: an admin channel that is down must not itself break the run or
+    cause an otherwise-successful article to be retried forever.
+    """
+    try:
+        cfg = get_config()
+    except Exception as e:
+        logger.error(f"Admin alert skipped, config unavailable: {e}")
+        return
+
+    if not cfg.ADMIN_PUSHBULLET_API_KEY and not cfg.ADMIN_EMAIL:
+        return
+
+    title = f"[Social Schools admin] {summary}"
+    body = _format_admin_alert(summary, detail, exc)
+
+    if cfg.ADMIN_PUSHBULLET_API_KEY:
+        try:
+            _send_pushbullet(title, body, {"admin": cfg.ADMIN_PUSHBULLET_API_KEY})
+        except Exception as e:
+            logger.error(f"Failed to send admin Pushbullet alert: {e}")
+    if cfg.ADMIN_EMAIL:
+        try:
+            _send_email(title, body, cfg.EMAIL_SENDER, cfg.EMAIL_APP_PASSWORD, {"admin": cfg.ADMIN_EMAIL})
+        except Exception as e:
+            logger.error(f"Failed to send admin email alert: {e}")
 
 
 def _check_copilot_available():
@@ -719,8 +866,9 @@ def render_digest_notification(data: Digest, failed_attachments=None, original_t
     return "\n\n".join(sections)
 
 
-def generate_digest(title, body, attachments):
-    language = get_config().TRANSLATION_LANGUAGE
+def generate_digest(title, body, attachments, language=None):
+    if language is None:
+        language = get_config().TRANSLATION_LANGUAGE
     attachment_text = ""
     if attachments:
         parts = [f"\n\n[Attachment: {a.filename}]\n{a.text}" for a in attachments if not a.failed]
@@ -768,6 +916,11 @@ def generate_digest(title, body, attachments):
             digest = _dict_to_digest(_extract_json(raw))
         except (ValueError, json.JSONDecodeError) as e2:
             logger.warning(f"Digest retry also invalid ({e2}), using safe fallback")
+            notify_admin(
+                "Digest degraded to fallback text",
+                f"Article: {title}\nThe LLM returned an invalid digest twice; parents got a placeholder summary.",
+                exc=e2,
+            )
             digest = Digest(
                 translated_title=title,
                 tldr="(Could not generate summary \u2014 open the original post for details)",
@@ -793,6 +946,7 @@ def process_pdf_links(playwright, browser, context, pdf_links):
                 attachments.append(Attachment(filename=pdf_filename, url=pdf_url, filetype="pdf", text=text))
             except Exception as e:
                 logger.error(f"Failed to process PDF '{pdf_filename}': {e}")
+                notify_admin("Attachment could not be processed", f"PDF: {pdf_filename}\nURL: {pdf_url}", exc=e)
                 attachments.append(Attachment(filename=pdf_filename, url=pdf_url, filetype="pdf", text="", failed=True))
     return attachments
 
@@ -820,6 +974,7 @@ def process_docx_links(playwright, browser, context, docx_links):
                 attachments.append(Attachment(filename=docx_filename, url=docx_url, filetype="docx", text=text))
             except Exception as e:
                 logger.error(f"Failed to process DOCX '{docx_filename}': {e}")
+                notify_admin("Attachment could not be processed", f"DOCX: {docx_filename}\nURL: {docx_url}", exc=e)
                 attachments.append(Attachment(filename=docx_filename, url=docx_url, filetype="docx", text="", failed=True))
     return attachments
 
@@ -938,13 +1093,22 @@ def process_all_articles(playwright, browser, context, page):
             expand_full_text(article)
 
             try:
-                process_article_content(playwright, browser, context, article)
+                succeeded = process_article_content(playwright, browser, context, article)
+                if not succeeded:
+                    # Left unmarked deliberately so the next run retries it.
+                    logger.warning(f"Article {article_id} not fully processed, leaving unmarked")
+                    continue
                 if not FORCE_REPROCESS:
                     save_processed_article(article_id)
                     processed_ids.append(article_id)
             except Exception as e:
                 logger.error(f"Error processing article {article_id}: {str(e)}")
                 logger.error(f"Stack trace: {traceback.format_exc()}")
+                notify_admin(
+                    "Article processing failed",
+                    f"Article: {title} [{article_id}]\nLeft unmarked; it will be retried on the next run.",
+                    exc=e,
+                )
                 # Continue to next article; leave unmarked for retry
 
     except Exception as e:
@@ -1025,20 +1189,37 @@ def _read_visible_article_body(article):
 
 
 def process_article_content(playwright, browser, context, article):
+    """Process one article end to end.
+
+    Returns True only when the article was fully handled and every notification
+    was delivered, so the caller may mark it processed. Returns False (or raises)
+    otherwise, leaving the article unmarked for retry on the next run.
+    """
     try:
         body = _read_visible_article_body(article)
     except ValueError as exc:
         logger.warning(f"Skipping article with no readable body: {exc}")
-        return
+        notify_admin(
+            "Article body could not be read",
+            "The article markup did not match any known body selector; it stays unmarked for retry.",
+            exc=exc,
+        )
+        return False
 
     title_el = article.query_selector("h3")
     title = title_el.inner_text() if title_el else "(no title)"
 
     if not get_config().DIGEST_ENABLED:
-        # Translation-only mode: no LLM, no attachment extraction
+        # Translation-only mode: no LLM, no attachment extraction. Each
+        # requested language is translated exactly once and shared by every
+        # recipient who wants that language.
         logger.info("Digest disabled — sending translated content directly")
-        send_notification(title=translate(title), body=translate(body))
-        return
+        content = {
+            language: (translate(title, dest=language), translate(body, dest=language))
+            for language in get_requested_languages()
+        }
+        send_multilingual_notification(content)
+        return True
 
     attachments = []  # list[Attachment] — includes failed extractions
 
@@ -1060,8 +1241,11 @@ def process_article_content(playwright, browser, context, article):
     if not pdf_links and not docx_links:
         logger.info("No PDFs or Word documents found in article.")
 
+    # Generate one Digest per requested language — never more than the
+    # languages recipients actually asked for.
+    languages = get_requested_languages()
     try:
-        data = generate_digest(title, body, attachments)
+        digests = {language: generate_digest(title, body, attachments, language=language) for language in languages}
     except RuntimeError as e:
         logger.error(f"Digest generation failed: {e}")
         send_notification(
@@ -1071,15 +1255,20 @@ def process_article_content(playwright, browser, context, article):
         raise
 
     failed_names = [a.filename for a in attachments if a.failed] or None
-    send_notification(
-        title=data.translated_title,
-        body=render_digest_notification(
-            data,
-            failed_attachments=failed_names,
-            original_title=title,
-            post_date=_get_post_date(article),
-        ),
-    )
+    content = {
+        language: (
+            digest.translated_title,
+            render_digest_notification(
+                digest,
+                failed_attachments=failed_names,
+                original_title=title,
+                post_date=_get_post_date(article),
+            ),
+        )
+        for language, digest in digests.items()
+    }
+    send_multilingual_notification(content)
+    return True
 
 
 if __name__ == "__main__":
@@ -1097,4 +1286,5 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
         logger.error(f"Stack trace: {traceback.format_exc()}")
+        notify_admin("Run aborted with a fatal error", "No further articles were processed.", exc=e)
         raise

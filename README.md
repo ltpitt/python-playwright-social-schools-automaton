@@ -46,6 +46,16 @@ Notifications are sent individually to each entry in `PUSHBULLET_API_KEYS`, a co
 
 A single entry (e.g. `PUSHBULLET_API_KEYS = You:your_token_here`) keeps the original single-recipient behavior.
 
+### Per-recipient language
+
+Each recipient can receive notifications in their own language by appending `:language` to their entry:
+
+```ini
+PUSHBULLET_API_KEYS = Davide:davides_token:it,Daniela:danielas_token:en
+```
+
+A recipient without a `:language` suffix falls back to `TRANSLATION_LANGUAGE`. This works the same way for `EMAIL_RECIPIENTS` (see below). Content is generated **once per distinct language actually requested** — never per recipient — and shared by everyone who asked for that language, so nothing is translated (or summarized, in Digest mode) more than necessary.
+
 > We deliberately don't use Pushbullet **channels** for this: channel subscriptions require no approval from the owner, and the `channel-info` API is publicly queryable without authentication — anyone who learns the channel tag can read/subscribe to notifications. Since these notifications can include your child's name, school, and schedule, per-recipient private tokens are the safer choice.
 
 ## Notify by email (Gmail)
@@ -66,9 +76,35 @@ EMAIL_RECIPIENTS = You:you@example.com,Partner:partner@example.com
 - `EMAIL_SENDER` is the Gmail address the notifications are sent **from**.
 - `EMAIL_APP_PASSWORD` is a Gmail **App Password**, *not* your normal Google password. Enable [2-Step Verification](https://myaccount.google.com/security), then create one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
 - `EMAIL_RECIPIENTS` mirrors `PUSHBULLET_API_KEYS`: a comma-separated list of `name:email` pairs (the name is only used in logs). Each recipient is emailed individually, so their address is never exposed to the others. A single entry works too.
+- Like `PUSHBULLET_API_KEYS`, each entry accepts an optional `:language` suffix (e.g. `You:you@example.com:it`) to override `TRANSLATION_LANGUAGE` for that recipient — see [Per-recipient language](#per-recipient-language) above.
 
 Sending assumes Gmail's SMTP server (`smtp.gmail.com`).
 
+## Admin alerts
+
+Parents only ever see the good stuff. Everything that goes *wrong* — a failed login, an article whose body can't be read, an attachment that won't download, a degraded digest, a broken state file, a fatal crash — is sent to a separate **admin channel** so you can spot problems without reading the logs.
+
+Both settings are optional and independent; leave both empty to disable admin alerting.
+
+```ini
+ADMIN_PUSHBULLET_API_KEY = o.your_admin_pushbullet_token
+ADMIN_EMAIL = admin@example.com
+```
+
+- `ADMIN_PUSHBULLET_API_KEY` is a single Pushbullet access token (no `name:` prefix).
+- `ADMIN_EMAIL` is a single address, delivered using the `EMAIL_SENDER` / `EMAIL_APP_PASSWORD` credentials above.
+- Admin delivery is best-effort: if the admin channel itself is down, the run continues and the failure is only logged.
+
+### When is an article marked as processed?
+
+An article is recorded in `processed_articles.json` **only when it was fully processed and every notification was delivered**. If the digest fails, a notification fails to send, or the article body can't be read, the article stays unmarked and is retried on the next run.
+
+Two degraded-but-delivered cases still count as processed, because the notification did reach parents (and it tells them something was missing) — re-sending it every run would just be spam:
+
+- an attachment that could not be downloaded or read (the notification carries a "could not be read" warning)
+- a digest that fell back to placeholder text after the LLM returned invalid output twice
+
+Both still raise an admin alert.
 
 
 ## Why this exists
@@ -119,6 +155,8 @@ Now, we can all sit back, relax, and let this script connect to the school websi
      EMAIL_SENDER =                                  # Gmail address to send from (optional, see "Notify by email")
      EMAIL_APP_PASSWORD =                            # Gmail App Password (optional)
      EMAIL_RECIPIENTS =                              # Comma-separated 'name:email' pairs (optional)
+     ADMIN_PUSHBULLET_API_KEY =                      # Admin-only token for error alerts (optional)
+     ADMIN_EMAIL =                                   # Admin-only address for error alerts (optional)
      TRANSLATION_LANGUAGE = en                       # "en" for English, "it" for Italian, etc.
      DIGEST_ENABLED = true                           # false for plain translation mode
      ```
@@ -140,7 +178,7 @@ The script checks for new content once per run, so schedule it (e.g. hourly) wit
 ## Important notes
 
 - Keep your `config.ini` file safe and never share it with others
-- The script will remember which articles it has already processed
+- The script will remember which articles it has already processed, but only once they are fully processed and notified — see [Admin alerts](#admin-alerts)
 - You'll get notifications on your phone through Pushbullet when new content is available
 - Both PDFs and Word documents are supported and will be processed automatically
 

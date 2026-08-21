@@ -42,7 +42,7 @@ corpus:
 
 # Run the real digest flow without sending notifications.
 product:
-	python run_digest.py
+	python run_digest.py $(if $(FORCE),--force,)
 
 # Evaluate the exact product written by the product target.
 eval:

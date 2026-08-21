@@ -57,9 +57,32 @@ def test_run_corpus_writes_json_product(tmp_path):
         result = run_corpus(str(corpus_path), str(output_path))
 
     saved = json.loads(output_path.read_text(encoding="utf-8"))
-    assert result["summary"] == {"total": 1, "successful": 1, "failed": 0, "violations": 0}
+    assert result["summary"] == {
+        "total": 1, "cached": 0, "successful": 1, "failed": 0, "violations": 0}
     assert saved["cases"][0]["source"]["id"] == "test-article"
     assert saved["cases"][0]["product"]["digest"]["translated_title"] == "Test article"
+
+
+def test_run_corpus_reuses_unchanged_product(tmp_path):
+    corpus_path = tmp_path / "corpus.json"
+    output_path = tmp_path / "product.json"
+    state_path = tmp_path / "processed-products.json"
+    corpus_path.write_text(json.dumps([CASE]), encoding="utf-8")
+    digest = Digest("Test article", "Summary", [])
+
+    with patch("run_digest.generate_digest", return_value=digest) as generate:
+        first = run_corpus(str(corpus_path), str(output_path), str(state_path))
+        second = run_corpus(str(corpus_path), str(output_path), str(state_path))
+
+    assert first["summary"]["cached"] == 0
+    assert second["summary"]["cached"] == 1
+    assert generate.call_count == 1
+
+    with patch("run_digest.generate_digest", return_value=digest) as generate:
+        forced = run_corpus(
+            str(corpus_path), str(output_path), str(state_path), force=True)
+    assert forced["summary"]["cached"] == 0
+    generate.assert_called_once()
 
 
 def test_update_corpus_keeps_existing_cases_and_processed_ids(tmp_path):

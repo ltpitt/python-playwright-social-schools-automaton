@@ -182,6 +182,7 @@ corpus.json
 scrape*.json
 digests/
 eval_output/
+processed_product_articles.json
 eval_results.json
 expectations*.json
 tests/fixtures/

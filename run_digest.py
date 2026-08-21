@@ -6,6 +6,7 @@ inspection and evaluation, not notification delivery.
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 
@@ -19,6 +20,8 @@ from get_social_schools_news import (
 DEFAULT_CORPUS = "corpus/corpus.json"
 DEFAULT_OUTPUT = "eval_output/product.json"
 DEFAULT_PROCESSED = "processed_corpus_articles.json"
+DEFAULT_PRODUCT_STATE = "processed_product_articles.json"
+PRODUCT_GENERATOR_VERSION = 1
 
 
 def _attachments(case):
@@ -36,6 +39,15 @@ def _attachments(case):
 
 def _digest_product(digest):
     return asdict(digest)
+
+
+def _case_fingerprint(case):
+    payload = json.dumps(
+        {"version": PRODUCT_GENERATOR_VERSION, "case": case},
+        sort_keys=True,
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def run_case(case):
@@ -72,18 +84,45 @@ def run_case(case):
         }
 
 
-def run_corpus(corpus_path, output_path):
+def run_corpus(corpus_path, output_path, state_path=DEFAULT_PRODUCT_STATE, force=False):
     with open(corpus_path, encoding="utf-8") as stream:
         corpus = json.load(stream)
 
-    cases = [run_case(case) for case in corpus]
+    previous = {}
+    if os.path.exists(output_path):
+        with open(output_path, encoding="utf-8") as stream:
+            previous = {case["id"]: case for case in json.load(stream)["cases"]}
+    processed = {}
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as stream:
+            processed = json.load(stream)
+
+    cases = []
+    cached = 0
+    updated_processed = {}
+    for case in corpus:
+        fingerprint = _case_fingerprint(case)
+        old = previous.get(case["id"])
+        if (not force and old and old.get("fingerprint") == fingerprint
+                and processed.get(case["id"]) == fingerprint
+                and old.get("product") and old.get("error") is None):
+            result_case = old
+            cached += 1
+        else:
+            result_case = run_case(case)
+        result_case["fingerprint"] = fingerprint
+        cases.append(result_case)
+        if result_case["error"] is None:
+            updated_processed[case["id"]] = fingerprint
+
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "corpus": corpus_path,
         "cases": cases,
         "summary": {
             "total": len(cases),
+            "cached": cached,
             "successful": sum(case["error"] is None for case in cases),
             "failed": sum(case["error"] is not None for case in cases),
             "violations": sum(bool(case["violations"]) for case in cases),
@@ -93,6 +132,10 @@ def run_corpus(corpus_path, output_path):
     os.makedirs(parent, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2, ensure_ascii=False)
+    state_parent = os.path.dirname(os.path.abspath(state_path))
+    os.makedirs(state_parent, exist_ok=True)
+    with open(state_path, "w", encoding="utf-8") as stream:
+        json.dump(updated_processed, stream, indent=2, ensure_ascii=False)
     return result
 
 
@@ -113,16 +156,20 @@ def main():
     parser.add_argument("--limit", type=int, default=0,
                         help="how many feed articles to snapshot; 0 means all")
     parser.add_argument("--out", default=DEFAULT_OUTPUT)
+    parser.add_argument("--product-state", default=DEFAULT_PRODUCT_STATE)
+    parser.add_argument("--force", action="store_true",
+                        help="regenerate all products, ignoring the product cache")
     args = parser.parse_args()
 
     created = ensure_corpus(args.corpus, args.processed, args.limit)
     if created:
         print(f"Corpus was missing; created it at {args.corpus}")
 
-    result = run_corpus(args.corpus, args.out)
+    result = run_corpus(args.corpus, args.out, args.product_state, args.force)
     summary = result["summary"]
     print(
         f"Wrote {summary['total']} product case(s) to {args.out}; "
+        f"reused {summary['cached']} cached case(s); "
         f"{summary['violations']} case(s) have violations."
     )
     print("This file contains real school posts: personal data. Never commit it.")

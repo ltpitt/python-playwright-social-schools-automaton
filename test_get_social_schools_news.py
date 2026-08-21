@@ -2182,6 +2182,66 @@ def test_find_near_duplicates_allows_genuinely_distinct_entries():
     assert evaluate_digests.find_near_duplicates(digest) == []
 
 
+def test_find_near_duplicates_allows_one_entry_per_group():
+    """'Group 6B' and 'Group 6C' address different children, not the same one twice"""
+    digest = _digest([Topic(
+        heading="Class parents",
+        actions=[
+            "Email the class parent details for group 6B",
+            "Email the class parent details for group 6C",
+        ],
+        bring=[], notes=[])])
+    assert evaluate_digests.find_near_duplicates(digest) == []
+
+
+def test_find_near_duplicates_allows_shared_prefix_when_each_names_a_group():
+    """A start-time per group repeats wording by necessity"""
+    digest = _digest([Topic(
+        heading="First school day",
+        actions=[],
+        bring=[],
+        notes=[
+            "18 Aug - group 3 starts at 08:30",
+            "18 Aug - group 4 starts at 08:35",
+            "18 Aug - group 5 starts at 08:40",
+        ])])
+    assert evaluate_digests.find_near_duplicates(digest) == []
+
+
+def test_find_missing_hint_dates_ignores_newsletter_filler():
+    """A museum listing in an attached newsletter obliges no parent"""
+    body = ("Tot en met 11 oktober hangt het meisje naast haar ouders in het "
+            "museum aan het Klein Heiligland.")
+    digest = _digest([Topic(heading="News", actions=[], bring=[], notes=["a note"])])
+    assert evaluate_digests.find_missing_hint_dates(digest, body) == []
+
+
+def test_find_missing_hint_dates_still_flags_school_event():
+    """A school trip date is the whole reason the tool exists"""
+    body = "Het schoolreisje is op 1 september, we vertrekken om 08:30."
+    digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
+    assert evaluate_digests.find_missing_hint_dates(digest, body) == [
+        "source date not in digest: 1 Sep"]
+
+
+def test_find_structure_problems_allows_many_topics_in_a_newsletter():
+    """A full school newsletter really does have a dozen sections"""
+    digest = _digest([
+        Topic(heading=f"Section {i}", actions=[], bring=[], notes=["a note"])
+        for i in range(9)
+    ])
+    assert evaluate_digests.find_structure_problems(digest, "x" * 6000) == []
+
+
+def test_find_structure_problems_still_caps_topics_on_a_normal_post():
+    digest = _digest([
+        Topic(heading=f"Section {i}", actions=[], bring=[], notes=["a note"])
+        for i in range(9)
+    ])
+    problems = evaluate_digests.find_structure_problems(digest, "x" * 1000)
+    assert any("more than the message plausibly has" in p for p in problems)
+
+
 def test_find_missing_hint_dates_flags_dropped_date():
     body = "Op dinsdag 1 september gaan wij op schoolreisje."
     digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])

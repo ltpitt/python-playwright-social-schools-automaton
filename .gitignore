@@ -173,6 +173,7 @@ config.ini
 
 # Script runtime state
 processed_articles.json
+processed_corpus_articles.json
 
 # Scraped school content and anything derived from it. Real posts name children,
 # teachers and classes, so they must never enter this public repository.

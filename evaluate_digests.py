@@ -43,6 +43,31 @@ _SHARED_PREFIX_LIMIT = 3
 # A very short post has one subject; inventing headings for it is noise.
 _SINGLE_TOPIC_MAX_CHARS = 400
 _MAX_TOPICS = 6
+# A school newsletter genuinely has many sections, so the topic cap lifts for one.
+_NEWSLETTER_MIN_CHARS = 4000
+_MAX_TOPICS_NEWSLETTER = 12
+
+# Attachments are newsletters as often as they are class letters, and a
+# newsletter is full of dates that oblige nobody: sports results, museum
+# openings, city festivals, its own issue date. A date only counts as one the
+# digest must carry when it is asked of the reader, or is a school event the
+# child takes part in.
+_OBLIGATION_CUE_RE = re.compile(
+    r'\b('
+    r'moet\w*|graag|gelieve|lever\w*|inlever\w*|meenem\w*|neem mee|meebreng\w*|'
+    r'denk aan|vergeet niet|aanmeld\w*|inschrijv\w*|opgeven|opgave|doorgeven|'
+    r'invullen|retourner\w*|betal\w*|uiterlijk|deadline|verzoek\w*|aanwezig|'
+    r'verwacht\w*|houd rekening|let op|svp|a\.?u\.?b'
+    r'|schoolreis\w*|excursie\w*|kamp|schoolkamp|ouderavond\w*|informatieavond\w*|'
+    r'rapportgesprek\w*|oudergesprek\w*|tienminuten\w*|studiedag\w*|vrije dag|'
+    r'vakantie\w*|margedag\w*|gymles\w*|zwemles\w*|toets\w*|proefwerk\w*|'
+    r'schoolfotograaf|luizencontrole|sportdag\w*|koningsspelen|juffendag|'
+    r'meesterdag|voorstelling\w*|musical\w*|open dag|eerste schooldag|'
+    r'start\w* het schooljaar'
+    r')\b',
+    re.IGNORECASE,
+)
+_OBLIGATION_WINDOW = 200
 
 
 def _entry_lists(digest):
@@ -56,6 +81,21 @@ def _tokens(text):
     return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if t]
 
 
+def _identifiers(text):
+    """Tokens carrying a digit: '6b', '18', '08:30' - group names, dates, times."""
+    return frozenset(m.lower() for m in re.findall(r"[a-zA-Z]*\d[a-zA-Z0-9:]*", text))
+
+
+def _differ_by_number(entries):
+    """True when every entry carries its own identifier, e.g. one per group or date.
+
+    'Group 6B ...' and 'Group 6C ...' look near-identical as bags of words but
+    address different children, so they are not a repetition to collapse.
+    """
+    seen = [_identifiers(e) for e in entries]
+    return all(seen) and len(set(seen)) == len(seen)
+
+
 def find_placeholder_dates(digest):
     """Entries that invented a date rather than omitting one."""
     return [
@@ -66,37 +106,57 @@ def find_placeholder_dates(digest):
     ]
 
 
+def _overlapping_pairs(entries, label):
+    token_sets = [set(_tokens(e)) for e in entries]
+    violations = []
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            a, b = token_sets[i], token_sets[j]
+            if len(a) < 3 or len(b) < 3 or _differ_by_number([entries[i], entries[j]]):
+                continue
+            if len(a & b) / len(a | b) >= _DUPLICATE_JACCARD:
+                violations.append(
+                    f"near-duplicate in {label}: {entries[i]!r} vs {entries[j]!r}")
+    return violations
+
+
+def _shared_openings(entries, label):
+    prefixes = {}
+    for entry in entries:
+        tokens = _tokens(entry)
+        if len(tokens) >= _SHARED_PREFIX_TOKENS:
+            prefixes.setdefault(tuple(tokens[:_SHARED_PREFIX_TOKENS]), []).append(entry)
+    return [
+        f"{len(shared)} entries in {label} share the opening "
+        f"{' '.join(prefix)!r} - likely a list that should be 'bring'"
+        for prefix, shared in prefixes.items()
+        if len(shared) >= _SHARED_PREFIX_LIMIT and not _differ_by_number(shared)
+    ]
+
+
 def find_near_duplicates(digest):
     """Entries that repeat each other, e.g. a packing list split one item per action."""
     violations = []
     for heading, field, entries in _entry_lists(digest):
-        token_sets = [set(_tokens(e)) for e in entries]
-        for i in range(len(entries)):
-            for j in range(i + 1, len(entries)):
-                a, b = token_sets[i], token_sets[j]
-                if len(a) < 3 or len(b) < 3:
-                    continue
-                union = a | b
-                if union and len(a & b) / len(union) >= _DUPLICATE_JACCARD:
-                    violations.append(
-                        f"near-duplicate in {heading or '(untitled)'}/{field}: "
-                        f"{entries[i]!r} vs {entries[j]!r}")
-
-        prefixes = {}
-        for entry in entries:
-            tokens = _tokens(entry)
-            if len(tokens) >= _SHARED_PREFIX_TOKENS:
-                prefixes.setdefault(tuple(tokens[:_SHARED_PREFIX_TOKENS]), []).append(entry)
-        for prefix, shared in prefixes.items():
-            if len(shared) >= _SHARED_PREFIX_LIMIT:
-                violations.append(
-                    f"{len(shared)} entries in {heading or '(untitled)'}/{field} share the "
-                    f"opening {' '.join(prefix)!r} - likely a list that should be 'bring'")
+        label = f"{heading or '(untitled)'}/{field}"
+        violations += _overlapping_pairs(entries, label)
+        violations += _shared_openings(entries, label)
     return violations
 
 
+def _date_is_obligation(body, day, month_nl):
+    """Whether any mention of this date sits in a sentence that asks something."""
+    pattern = re.compile(rf'\b0?{int(day)}\s*{re.escape(month_nl)}\w*', re.IGNORECASE)
+    for match in pattern.finditer(body):
+        window = body[max(0, match.start() - _OBLIGATION_WINDOW):
+                      match.end() + _OBLIGATION_WINDOW]
+        if _OBLIGATION_CUE_RE.search(window):
+            return True
+    return False
+
+
 def find_missing_hint_dates(digest, body):
-    """Dates the pre-scan found in the source but that reach no entry."""
+    """Obligation-bearing source dates that reach no entry."""
     rendered = render_digest_notification(digest).lower()
     missing = []
     for hint in _extract_action_hints(body):
@@ -106,6 +166,8 @@ def find_missing_hint_dates(digest, body):
         day, month_nl = match.group(1), match.group(2)[:3].lower()
         abbr = _MONTH_ABBR_BY_DUTCH_PREFIX.get(month_nl)
         if not abbr:
+            continue
+        if not _date_is_obligation(body, day, month_nl):
             continue
         day_pattern = re.compile(rf'\b0?{int(day)}\b')
         if not any(day_pattern.search(line) and abbr.lower() in line
@@ -136,7 +198,8 @@ def find_structure_problems(digest, text):
     if len(text) < _SINGLE_TOPIC_MAX_CHARS and len(digest.topics) > 1:
         violations.append(
             f"{len(digest.topics)} topics for a {len(text)}-char message - headings likely invented")
-    if len(digest.topics) > _MAX_TOPICS:
+    max_topics = _MAX_TOPICS_NEWSLETTER if len(text) >= _NEWSLETTER_MIN_CHARS else _MAX_TOPICS
+    if len(digest.topics) > max_topics:
         violations.append(f"{len(digest.topics)} topics is more than the message plausibly has")
     return violations
 

@@ -2,6 +2,25 @@
 
 Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
+## NEVER COMMIT PERSONAL DATA
+
+**This repository is public. It must never contain personal data — not in files, not in commit messages, not in test fixtures, not in git history.**
+
+Personal data here means anything identifying a real person or flowing from the school account:
+
+- Credentials of any kind: passwords, Pushbullet tokens, Gmail app passwords, LLM API keys
+- Real email addresses, and the names of children, parents, teachers or classes/groups
+- **Scraped Social Schools content** — article bodies, titles, attachments, digests, notification text. Real posts routinely name children, teachers and class compositions, so treat every scraped byte as personal data
+- Runtime artifacts derived from the above: `run_report.txt`, `full_prompt.txt`, `loop_output.md`, `processed_articles.json`, corpus/eval snapshots
+
+Rules:
+
+1. Keep scraped content and secrets **outside the working tree** (use `$TMPDIR`), or gitignored. Prefer outside — a gitignore entry is one `git add -f` away from a leak.
+2. **Never** `git add -A`/`git add .` in this repo. Stage files explicitly by name.
+3. Tests, fixtures and examples use **invented** data only (`test@example.com`, "Test Article"). Never paste a real post into a test.
+4. Before committing, verify staged content: `git diff --cached`.
+5. If personal data does get committed, rewriting history is not enough for a pushed public repo — **rotate the exposed credentials** and tell the user immediately.
+
 ## About the Project
 Social Schools Automaton is a Python automation script that uses Playwright for web scraping. It automates downloading, translating, and notifying about new content from the Social Schools website. The script:
 - Logs into Social Schools using provided credentials

@@ -13,6 +13,7 @@ import os
 from evaluate_digests import structural_violations
 from get_social_schools_news import (
     Attachment,
+    DIGEST_PROMPT_TEMPLATE,
     generate_digest,
     render_digest_notification,
 )
@@ -43,7 +44,11 @@ def _digest_product(digest):
 
 def _case_fingerprint(case):
     payload = json.dumps(
-        {"version": PRODUCT_GENERATOR_VERSION, "case": case},
+        {
+            "version": PRODUCT_GENERATOR_VERSION,
+            "prompt": DIGEST_PROMPT_TEMPLATE,
+            "case": case,
+        },
         sort_keys=True,
         ensure_ascii=False,
     ).encode("utf-8")

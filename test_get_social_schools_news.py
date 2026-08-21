@@ -2236,3 +2236,47 @@ def test_score_recall_with_no_expectations_is_neutral():
     digest = _digest([Topic(heading="T", actions=["Do it"], bring=[], notes=[])])
     assert evaluate_digests.score_recall(digest, []) == (0, 0, [])
 
+
+def test_source_text_includes_attachment_content():
+    """An obligation stated only in a PDF is still one the digest must carry"""
+    case = {
+        "body": "Zie de bijlage.",
+        "attachments": [{"filename": "brief.pdf", "filetype": "pdf",
+                         "failed": False, "text": "Lever het formulier in voor 15 aug."}],
+    }
+    assert "15 aug" in evaluate_digests.source_text(case)
+
+
+def test_source_text_skips_failed_attachments():
+    """A failed extraction has no text, so it cannot be held against the digest"""
+    case = {
+        "body": "Zie de bijlage.",
+        "attachments": [{"filename": "brief.pdf", "filetype": "pdf",
+                         "failed": True, "text": ""}],
+    }
+    assert evaluate_digests.source_text(case) == "Zie de bijlage."
+
+
+def test_structural_violations_flag_date_found_only_in_attachment():
+    case = {
+        "body": "Zie de bijlage." + "x" * 500,
+        "attachments": [{"filename": "brief.pdf", "filetype": "pdf",
+                         "failed": False, "text": "Het schoolreisje is op 1 september."}],
+    }
+    digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
+    assert "source date not in digest: 1 Sep" in evaluate_digests.structural_violations(digest, case)
+
+
+def test_structural_violations_allow_topics_when_attachment_is_long():
+    """A short post with a long PDF is not a short message"""
+    case = {
+        "body": "Zie de bijlage.",
+        "attachments": [{"filename": "brief.pdf", "filetype": "pdf",
+                         "failed": False, "text": "y" * 2000}],
+    }
+    digest = _digest([
+        Topic(heading="One", actions=[], bring=[], notes=["a note"]),
+        Topic(heading="Two", actions=[], bring=[], notes=["another"]),
+    ])
+    assert evaluate_digests.structural_violations(digest, case) == []
+

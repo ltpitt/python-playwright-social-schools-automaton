@@ -129,25 +129,38 @@ def find_bring_repeated_in_actions(digest):
     return violations
 
 
-def find_structure_problems(digest, body):
+def find_structure_problems(digest, text):
     violations = []
     if not digest.tldr.strip():
         violations.append("tldr is empty")
-    if len(body) < _SINGLE_TOPIC_MAX_CHARS and len(digest.topics) > 1:
+    if len(text) < _SINGLE_TOPIC_MAX_CHARS and len(digest.topics) > 1:
         violations.append(
-            f"{len(digest.topics)} topics for a {len(body)}-char post - headings likely invented")
+            f"{len(digest.topics)} topics for a {len(text)}-char message - headings likely invented")
     if len(digest.topics) > _MAX_TOPICS:
         violations.append(f"{len(digest.topics)} topics is more than the message plausibly has")
     return violations
 
 
-def structural_violations(digest, body):
+def source_text(case):
+    """Everything the digest was given, mirroring generate_digest's hint source.
+
+    A date or obligation stated only in a PDF is still a date the digest must
+    carry, and a three-line post with a long attachment is not a short message.
+    """
+    return "\n".join(
+        [case["body"]]
+        + [a["text"] for a in case.get("attachments", []) if not a.get("failed")]
+    )
+
+
+def structural_violations(digest, case):
+    text = source_text(case)
     return (
         find_placeholder_dates(digest)
         + find_near_duplicates(digest)
-        + find_missing_hint_dates(digest, body)
+        + find_missing_hint_dates(digest, text)
         + find_bring_repeated_in_actions(digest)
-        + find_structure_problems(digest, body)
+        + find_structure_problems(digest, text)
     )
 
 
@@ -171,7 +184,7 @@ def evaluate_case(case, expected, runs):
     for _ in range(max(1, runs)):
         try:
             digest = generate_digest(case["title"], case["body"], attachments)
-            violations = structural_violations(digest, case["body"])
+            violations = structural_violations(digest, case)
             hits, total, missing = score_recall(digest, expected)
         except Exception as exc:
             violations, hits, total, missing = [f"digest failed: {exc}"], 0, len(expected or []), list(expected or [])

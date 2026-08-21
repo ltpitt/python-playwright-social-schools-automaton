@@ -10,7 +10,7 @@ import logging
 import traceback
 from email.message import EmailMessage
 from io import BytesIO
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import fitz  # PyMuPDF
 import requests
@@ -185,16 +185,22 @@ DIGEST_PROMPT_TEMPLATE = (
     "  \"translated_title\": \"<article title in {language}>\",\n"
     "  \"tldr\": \"<1-3 sentence summary in {language}, empty string if "
     "action_items and key_dates cover everything>\",\n"
-    "  \"action_items\": [\"<deadline first - what parent must do>\"],\n"
-    "  \"key_dates\": [\"<date - event or closure>\"]\n"
+    "  \"action_items\": [\"<what the parent must do, prefixed with 'DD Mon - ' only if dated>\"],\n"
+    "  \"key_dates\": [\"<event or closure, prefixed with 'DD Mon - ' only if dated>\"]\n"
     "}}\n\n"
     "Rules:\n"
     "- action_items and key_dates are empty arrays [] if none exist.\n"
-    "- action_items: things the parent must actively do. Format: 'DD Mon - what to do'\n"
-    "- key_dates: informational events or closures the parent does not need to act on. Format: 'DD Mon - event'\n"
-    "- Do NOT repeat a date in key_dates if it already appears in action_items.\n"
-    "- Every true obligation with a deadline or date MUST appear as an action item, and every "
-    "non-actionable date MUST appear as a key date \u2014 use the pre-scan hints below (if any) so you "
+    "- action_items: things the parent must actively do. key_dates: things to be aware of but not act on.\n"
+    "- Prefix an entry with 'DD Mon - ' ONLY when the message states a date for it. If there is no "
+    "date, write the entry without any date prefix. NEVER invent a date or use a placeholder like "
+    "'XX Sep' or 'date not specified'.\n"
+    "- Undated obligations still count: supplies to provide, forms to sign, things to arrange with "
+    "no deadline MUST appear as action items.\n"
+    "- Each entry must be self-contained and specific enough to act on without opening the original "
+    "message: list the actual items to bring, the exact times, and which group/class it applies to "
+    "when the message says so.\n"
+    "- Every true obligation MUST appear as an action item and every non-actionable date MUST appear "
+    "as a key date \u2014 use the pre-scan hints below (if any) so you "
     "don't miss or misplace one, but never invent an item that isn't actually in the message.\n"
     "- If an action item or key date is based on information found in an attachment rather than the "
     "article body itself, append the source attachment's filename in parentheses at the end, e.g. "
@@ -232,6 +238,20 @@ _POST_DATETIME_RE = re.compile(
     r'(\d{1,2})\s+(' + "|".join(_DUTCH_MONTHS) + r')\b(?:[^\d]{0,6}(\d{1,2}:\d{2}))?',
     re.IGNORECASE,
 )
+
+# Recent posts are labelled relatively ("vandaag om 15:47", "afgelopen dinsdag om 15:39") and only
+# older ones carry a month name, so relative labels must be resolved against the current date.
+_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_RELATIVE_DAY_OFFSETS = {"vandaag": 0, "gisteren": 1, "eergisteren": 2}
+_RELATIVE_DAY_RE = re.compile(
+    r'\b(' + "|".join(_RELATIVE_DAY_OFFSETS) + r')\b', re.IGNORECASE)
+_DUTCH_WEEKDAYS = {
+    "maandag": 0, "dinsdag": 1, "woensdag": 2, "donderdag": 3,
+    "vrijdag": 4, "zaterdag": 5, "zondag": 6,
+}
+_WEEKDAY_RE = re.compile(r'\b(' + "|".join(_DUTCH_WEEKDAYS) + r')\b', re.IGNORECASE)
+_TIME_OF_DAY_RE = re.compile(r'\b(\d{1,2}:\d{2})\b')
 
 
 def load_processed_articles():
@@ -812,12 +832,29 @@ def _get_article_id(article):
     return article_id
 
 
-def _get_post_date(article):
+def _resolve_relative_dutch_date(text, today):
+    """Resolve 'vandaag' / 'gisteren' / '(afgelopen) dinsdag' to a concrete date, or None."""
+    relative = _RELATIVE_DAY_RE.search(text)
+    if relative:
+        return today - timedelta(days=_RELATIVE_DAY_OFFSETS[relative.group(1).lower()])
+
+    weekday = _WEEKDAY_RE.search(text)
+    if weekday:
+        # Social Schools only labels days this way when they are in the recent past.
+        days_back = (today.weekday() - _DUTCH_WEEKDAYS[weekday.group(1).lower()]) % 7 or 7
+        return today - timedelta(days=days_back)
+
+    return None
+
+
+def _get_post_date(article, today=None):
     """Return the post's date/time as 'D Mon' or 'D Mon HH:MM', or None if unavailable.
 
     Social Schools does not render a machine-readable <time datetime=...> element; the post
-    date/time is plain Dutch text inside a link, e.g. '7 juli om 13:19'. This parses that text
-    directly and keeps the time-of-day when present instead of collapsing it to just a date.
+    date/time is plain Dutch text inside a link. Older posts carry a month name ('7 juli om 13:19')
+    while recent ones are relative ('vandaag om 15:47', 'afgelopen dinsdag om 15:39'), so both forms
+    are handled here. Only the leading segment is read, since an edited post appends a second
+    ', bijgewerkt ...' timestamp that would otherwise mask the original posting time.
     """
     date_el = article.query_selector("a.meta-info")
     if not date_el:
@@ -825,16 +862,26 @@ def _get_post_date(article):
     raw = date_el.inner_text()
     if not raw:
         return None
-    match = _POST_DATETIME_RE.search(raw)
-    if not match:
+    posted = raw.split(",")[0]
+
+    match = _POST_DATETIME_RE.search(posted)
+    if match:
+        day, month_nl, time_part = match.group(1), match.group(2).lower(), match.group(3)
+        month_abbr = _DUTCH_MONTHS.get(month_nl)
+        if not month_abbr:
+            return None
+        result = f"{int(day)} {month_abbr}"
+        if time_part:
+            result += f" {time_part}"
+        return result
+
+    resolved = _resolve_relative_dutch_date(posted, today or date.today())
+    if not resolved:
         return None
-    day, month_nl, time_part = match.group(1), match.group(2).lower(), match.group(3)
-    month_abbr = _DUTCH_MONTHS.get(month_nl)
-    if not month_abbr:
-        return None
-    result = f"{int(day)} {month_abbr}"
-    if time_part:
-        result += f" {time_part}"
+    result = f"{resolved.day} {_MONTH_ABBR[resolved.month - 1]}"
+    time_match = _TIME_OF_DAY_RE.search(posted)
+    if time_match:
+        result += f" {time_match.group(1)}"
     return result
 
 

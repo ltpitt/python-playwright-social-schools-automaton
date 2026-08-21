@@ -2,6 +2,7 @@ import json
 import pytest
 import os
 import sys
+from datetime import date
 from unittest.mock import Mock, patch, mock_open
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -712,6 +713,39 @@ def test_generate_digest_omits_pre_scan_hints_when_none_found(mock_config):
         assert "Pre-scan hints" not in prompt
 
 
+def test_generate_digest_prompt_allows_undated_action_items(mock_config):
+    """Undated obligations must have a home, and placeholder dates must be forbidden"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps({
+        "translated_title": "Title",
+        "tldr": "Summary",
+        "action_items": [],
+        "key_dates": [],
+    })
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        generate_digest("Title", "Body", [])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert "ONLY when the message states a date" in prompt
+        assert "NEVER invent a date" in prompt
+        assert "Undated obligations still count" in prompt
+        assert "self-contained" in prompt
+
+
+def test_dict_to_digest_accepts_undated_action_item():
+    """An action item with no date prefix is valid content, not a schema violation"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "",
+        "action_items": ["Provide 12 colouring pencils, markers and headphones"],
+        "key_dates": [],
+    }
+    digest = _dict_to_digest(data)
+    assert digest.action_items == ["Provide 12 colouring pencils, markers and headphones"]
+
+
 def test_generate_digest_retry_prompt_demands_target_language(mock_config):
     """Test the retry prompt explicitly requires the configured reader language"""
     mock_config.TRANSLATION_LANGUAGE = "it"
@@ -1015,6 +1049,40 @@ def test_get_post_date_unparseable_text():
     """Test that text without a recognizable day/month returns None instead of raising"""
     article = _mock_article_with_date_text("not-a-date")
     assert _get_post_date(article) is None
+
+
+def test_get_post_date_ignores_edited_suffix():
+    """An edited post appends ', bijgewerkt ...'; the original posting time must win"""
+    article = _mock_article_with_date_text("7 juli om 13:19,\xa0bijgewerkt\xa07 juli om 16:47")
+    assert _get_post_date(article) == "7 Jul 13:19"
+
+
+@pytest.mark.parametrize("word,expected_day", [
+    ("vandaag", 21), ("gisteren", 20), ("eergisteren", 19),
+])
+def test_get_post_date_resolves_relative_day(word, expected_day):
+    """Recent posts are labelled 'vandaag'/'gisteren' and must resolve to a real date"""
+    article = _mock_article_with_date_text(f"{word} om 15:47,\xa0bijgewerkt\xa0{word} om 16:47")
+    assert _get_post_date(article, today=date(2026, 8, 21)) == f"{expected_day} Aug 15:47"
+
+
+def test_get_post_date_resolves_past_weekday():
+    """'afgelopen dinsdag' resolves to the most recent past Tuesday"""
+    article = _mock_article_with_date_text("afgelopen dinsdag om 15:39")
+    # 2026-08-21 is a Friday, so the preceding Tuesday is the 18th.
+    assert _get_post_date(article, today=date(2026, 8, 21)) == "18 Aug 15:39"
+
+
+def test_get_post_date_weekday_matching_today_resolves_to_last_week():
+    """A weekday label never means today, so it resolves a full week back"""
+    article = _mock_article_with_date_text("afgelopen vrijdag om 09:00")
+    assert _get_post_date(article, today=date(2026, 8, 21)) == "14 Aug 09:00"
+
+
+def test_get_post_date_relative_without_time():
+    """A relative label with no time still yields a date"""
+    article = _mock_article_with_date_text("gisteren")
+    assert _get_post_date(article, today=date(2026, 8, 21)) == "20 Aug"
 
 
 # =============================================================================

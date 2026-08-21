@@ -731,6 +731,8 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "NEVER invent a date" in prompt
         assert "Order topics by urgency" in prompt
         assert "which group or class" in prompt
+        assert "date not specified" in prompt
+        assert "Purchase the" in prompt
 
 
 def test_dict_to_digest_accepts_undated_entries():

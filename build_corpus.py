@@ -95,7 +95,8 @@ def build_corpus(limit, with_attachments, processed_ids=None):
                 raise RuntimeError("Feed element not found")
 
             articles = feed.query_selector_all("div[role='article']")
-            for article in articles[:limit]:
+            candidates = articles if limit <= 0 else articles[:limit]
+            for article in candidates:
                 article_id = _get_article_id(article)
                 if article_id in processed_ids:
                     continue
@@ -136,7 +137,8 @@ def main():
     parser.add_argument("--out", default=DEFAULT_OUT, help=f"output path (default: {DEFAULT_OUT})")
     parser.add_argument("--processed", default=DEFAULT_PROCESSED,
                         help=f"processed ID state (default: {DEFAULT_PROCESSED})")
-    parser.add_argument("--limit", type=int, default=20, help="how many feed articles to snapshot")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="how many feed articles to snapshot; 0 means all")
     parser.add_argument("--no-attachments", action="store_true",
                         help="skip downloading PDFs/Word docs (much faster)")
     args = parser.parse_args()

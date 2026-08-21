@@ -96,7 +96,7 @@ def run_corpus(corpus_path, output_path):
     return result
 
 
-def ensure_corpus(corpus_path, processed_path=DEFAULT_PROCESSED, limit=20):
+def ensure_corpus(corpus_path, processed_path=DEFAULT_PROCESSED, limit=0):
     if os.path.exists(corpus_path):
         return False
 
@@ -110,7 +110,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", default=DEFAULT_CORPUS)
     parser.add_argument("--processed", default=DEFAULT_PROCESSED)
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--limit", type=int, default=0,
+                        help="how many feed articles to snapshot; 0 means all")
     parser.add_argument("--out", default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 

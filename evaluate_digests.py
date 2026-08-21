@@ -10,7 +10,7 @@ Two tiers of check:
 * Recall — "this digest must mention X", loaded from a local expectations file.
   Those strings quote real posts, so the file is personal data and gitignored.
 
-Run `build_corpus.py` first. Sends no notifications.
+Run `run_digest.py` first. Sends no notifications.
 """
 import argparse
 import json
@@ -20,13 +20,12 @@ import sys
 
 from get_social_schools_news import (
     _DUTCH_MONTHS,
+    _dict_to_digest,
     _extract_action_hints,
-    Attachment,
-    generate_digest,
     render_digest_notification,
 )
 
-DEFAULT_CORPUS = "corpus/corpus.json"
+DEFAULT_PRODUCT = "eval_output/product.json"
 DEFAULT_RESULTS = "eval_results.json"
 
 _PLACEHOLDER_RE = re.compile(
@@ -236,55 +235,54 @@ def score_recall(digest, expected):
     return len(expected) - len(missing), len(expected), missing
 
 
-def evaluate_case(case, expected, runs):
-    """Run a case `runs` times and keep the worst outcome, since sampling can vary."""
-    attachments = [
-        Attachment(filename=a["filename"], url="", filetype=a["filetype"],
-                   text=a["text"], failed=a["failed"])
-        for a in case.get("attachments", [])
-    ]
-    worst = None
-    for _ in range(max(1, runs)):
-        try:
-            digest = generate_digest(case["title"], case["body"], attachments)
-            violations = structural_violations(digest, case)
-            hits, total, missing = score_recall(digest, expected)
-        except Exception as exc:
-            violations, hits, total, missing = [f"digest failed: {exc}"], 0, len(expected or []), list(expected or [])
-        result = {
-            "id": case["id"],
+def evaluate_product_case(record, expected):
+    """Evaluate one already-generated product without calling the model."""
+    case = record["source"]
+    if not record.get("product"):
+        violations = record.get("violations") or ["product has no digest"]
+        return {
+            "id": record["id"],
             "violations": violations,
-            "recall_hits": hits,
-            "recall_total": total,
-            "recall_missing": missing,
+            "recall_hits": 0,
+            "recall_total": len(expected or []),
+            "recall_missing": list(expected or []),
         }
-        if worst is None or (len(violations), -hits) > (len(worst["violations"]), -worst["recall_hits"]):
-            worst = result
-    return worst
+
+    digest = _dict_to_digest(record["product"]["digest"])
+    violations = structural_violations(digest, case)
+    hits, total, missing = score_recall(digest, expected)
+    return {
+        "id": record["id"],
+        "violations": violations,
+        "recall_hits": hits,
+        "recall_total": total,
+        "recall_missing": missing,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", default=DEFAULT_CORPUS)
+    parser.add_argument("--product", default=DEFAULT_PRODUCT)
     parser.add_argument("--expectations", help="local JSON of {case_id: [must-mention, ...]}")
     parser.add_argument("--results", default=DEFAULT_RESULTS)
     parser.add_argument("--baseline", help="previous results file to diff against")
-    parser.add_argument("--runs", type=int, default=1,
-                        help="repeats per case; the worst run counts (temperature 0 is not exactly deterministic)")
     parser.add_argument("--min-recall", type=float, default=1.0)
     args = parser.parse_args()
 
-    if not os.path.exists(args.corpus):
-        sys.exit(f"No corpus at {args.corpus}. Run build_corpus.py first.")
-    with open(args.corpus, encoding="utf-8") as f:
-        corpus = json.load(f)
+    if not os.path.exists(args.product):
+        sys.exit(f"No product at {args.product}. Run make product first.")
+    with open(args.product, encoding="utf-8") as f:
+        product = json.load(f)
 
     expectations = {}
     if args.expectations:
         with open(args.expectations, encoding="utf-8") as f:
             expectations = json.load(f)
 
-    results = [evaluate_case(case, expectations.get(case["id"], []), args.runs) for case in corpus]
+    results = [
+        evaluate_product_case(case, expectations.get(case["id"], []))
+        for case in product["cases"]
+    ]
 
     baseline = {}
     if args.baseline and os.path.exists(args.baseline):

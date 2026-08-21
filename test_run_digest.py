@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from get_social_schools_news import Digest, Topic
 from build_corpus import update_corpus
+from evaluate_digests import evaluate_product_case
 from run_digest import run_case, run_corpus
 
 
@@ -97,3 +98,28 @@ def test_ensure_corpus_builds_only_when_missing(tmp_path):
     with patch("build_corpus.update_corpus") as update:
         assert ensure_corpus(str(corpus_path), str(processed_path), 7) is False
     update.assert_not_called()
+
+
+def test_evaluate_product_case_does_not_generate_again():
+    record = {
+        "id": "test-article",
+        "source": CASE,
+        "product": {
+            "digest": {
+                "translated_title": "Test article",
+                "tldr": "Bring a hat.",
+                "topics": [{
+                    "heading": "Trip",
+                    "actions": [],
+                    "bring": ["a hat"],
+                    "notes": [],
+                }],
+            },
+            "notification": "Bring a hat.",
+        },
+    }
+    with patch("get_social_schools_news.generate_digest", side_effect=AssertionError):
+        result = evaluate_product_case(record, [])
+
+    assert result["id"] == "test-article"
+    assert result["violations"] == []

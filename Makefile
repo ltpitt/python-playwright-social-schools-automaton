@@ -1,4 +1,4 @@
-.PHONY: help install lint test check run loop clean corpus product eval
+.PHONY: help install lint test check run loop clean corpus product eval eval-cycle
 
 help:
 	@echo "Usage: make <target>"
@@ -8,9 +8,10 @@ help:
 	@echo "  test     Run pytest suite"
 	@echo "  check    lint + test + import sanity (CI gate)"
 	@echo "  run      Run the main script (requires config.ini)"
-	@echo "  corpus   Snapshot real posts into corpus/ (gitignored; personal data)"
-	@echo "  product  Run digest flow and save source + product JSON"
-	@echo "  eval     Score digests over corpus/ and gate on the result"
+	@echo "  corpus      Update corpus with new posts and attachments"
+	@echo "  product     Generate product JSON from the local corpus"
+	@echo "  eval        Evaluate the product JSON (does not call the model)"
+	@echo "  eval-cycle  Run corpus -> product -> eval in order"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
 	@echo "  clean    Remove Python cache directories"
 
@@ -35,7 +36,7 @@ check: lint test
 run:
 	python get_social_schools_news.py
 
-# Snapshot real posts for evaluation. Output is personal data and gitignored.
+# Update the local source corpus. Output is personal data and gitignored.
 corpus:
 	python build_corpus.py
 
@@ -43,9 +44,14 @@ corpus:
 product:
 	python run_digest.py
 
-# Score digests over the corpus. Non-zero exit on any violation.
+# Evaluate the exact product written by the product target.
 eval:
 	python evaluate_digests.py
+
+# Complete evaluation cycle. Non-zero exit means the product has failures.
+eval-cycle: corpus
+	$(MAKE) product
+	$(MAKE) eval
 
 # Run one loop iteration — clears previous output first
 loop:

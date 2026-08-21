@@ -1081,6 +1081,18 @@ def test_openai_compatible_complete_returns_content():
     assert url == "http://x/v1/chat/completions"
 
 
+def test_openai_compatible_requests_deterministic_sampling():
+    """Digest extraction must not sample at the provider's creative default temperature"""
+    provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m")
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+    with patch('requests.post', return_value=mock_resp) as mock_post:
+        provider.complete("prompt text")
+    payload = json.loads(mock_post.call_args[1]["data"])
+    assert payload["temperature"] == 0
+
+
 def test_openai_compatible_never_sends_tools():
     """ADR 0002 regression: the HTTP payload must never include tools/functions"""
     provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m")

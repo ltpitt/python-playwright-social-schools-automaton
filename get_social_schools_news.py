@@ -674,6 +674,8 @@ class OpenAICompatibleProvider(LLMProvider):
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
+            # Structured extraction, not creative writing: sample deterministically.
+            "temperature": 0,
         }
         try:
             resp = requests.post(

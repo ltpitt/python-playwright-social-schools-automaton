@@ -1,4 +1,4 @@
-.PHONY: help install lint test check run loop clean
+.PHONY: help install lint test check run loop clean corpus eval
 
 help:
 	@echo "Usage: make <target>"
@@ -8,6 +8,8 @@ help:
 	@echo "  test     Run pytest suite"
 	@echo "  check    lint + test + import sanity (CI gate)"
 	@echo "  run      Run the main script (requires config.ini)"
+	@echo "  corpus   Snapshot real posts into corpus/ (gitignored; personal data)"
+	@echo "  eval     Score digests over corpus/ and gate on the result"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
 	@echo "  clean    Remove Python cache directories"
 
@@ -31,6 +33,14 @@ check: lint test
 # Run the main script (requires valid config.ini)
 run:
 	python get_social_schools_news.py
+
+# Snapshot real posts for evaluation. Output is personal data and gitignored.
+corpus:
+	python build_corpus.py
+
+# Score digests over the corpus. Non-zero exit on any violation.
+eval:
+	python evaluate_digests.py
 
 # Run one loop iteration — clears previous output first
 loop:

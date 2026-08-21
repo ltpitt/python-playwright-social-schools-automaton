@@ -49,6 +49,7 @@ from get_social_schools_news import (  # noqa: E402
     CopilotCliProvider,
     OpenAICompatibleProvider,
 )
+import evaluate_digests  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -2124,3 +2125,114 @@ def test_load_config_reads_admin_settings(tmp_path, monkeypatch):
 
     assert result.ADMIN_PUSHBULLET_API_KEY == "o.admin"
     assert result.ADMIN_EMAIL == "admin@example.com"
+
+
+# =============================================================================
+# DIGEST EVALUATION SCORING
+#
+# Each check below encodes a failure actually observed in a delivered
+# notification, so these tests double as regression cases for the scorer.
+# =============================================================================
+
+
+def _digest(topics, tldr="Summary"):
+    return Digest(translated_title="T", tldr=tldr, topics=topics)
+
+
+def test_find_placeholder_dates_flags_invented_date():
+    """'XX Sep - Parent evening (date not specified)' was really emitted once"""
+    digest = _digest([Topic(heading="Evening",
+                            actions=["XX Sep - Parent evening (date not specified)"],
+                            bring=[], notes=[])])
+    assert evaluate_digests.find_placeholder_dates(digest)
+
+
+def test_find_placeholder_dates_accepts_undated_entry():
+    """An entry with no date at all is correct behaviour, not a placeholder"""
+    digest = _digest([Topic(heading="Supplies",
+                            actions=["Provide the listed school supplies"],
+                            bring=[], notes=[])])
+    assert evaluate_digests.find_placeholder_dates(digest) == []
+
+
+def test_find_near_duplicates_flags_exploded_packing_list():
+    """Nine 'Provide your child with X' actions were really emitted once"""
+    digest = _digest([Topic(
+        heading="Trip",
+        actions=[
+            "Provide your child with a towel for the school trip",
+            "Provide your child with shower gel for the school trip",
+            "Provide your child with dry clothes for the school trip",
+        ],
+        bring=[], notes=[])])
+    assert evaluate_digests.find_near_duplicates(digest)
+
+
+def test_find_near_duplicates_allows_genuinely_distinct_entries():
+    """Similarly-shaped but distinct test dates must not be flagged"""
+    digest = _digest([Topic(
+        heading="Tests",
+        actions=[],
+        bring=[],
+        notes=[
+            "07 Sep - topography test tile 1",
+            "11 Sep - English song 1",
+            "02 Oct - English song 2",
+        ])])
+    assert evaluate_digests.find_near_duplicates(digest) == []
+
+
+def test_find_missing_hint_dates_flags_dropped_date():
+    body = "Op dinsdag 1 september gaan wij op schoolreisje."
+    digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
+    assert evaluate_digests.find_missing_hint_dates(digest, body) == ["source date not in digest: 1 Sep"]
+
+
+def test_find_missing_hint_dates_passes_when_date_present():
+    body = "Op dinsdag 1 september gaan wij op schoolreisje."
+    digest = _digest([Topic(heading="Trip", actions=["01 Sep - school trip"], bring=[], notes=[])])
+    assert evaluate_digests.find_missing_hint_dates(digest, body) == []
+
+
+def test_find_bring_repeated_in_actions():
+    digest = _digest([Topic(heading="Trip",
+                            actions=["Provide a towel for the trip"],
+                            bring=["towel"], notes=[])])
+    assert evaluate_digests.find_bring_repeated_in_actions(digest)
+
+
+def test_find_structure_problems_flags_empty_tldr():
+    digest = _digest([Topic(heading="T", actions=["Do it"], bring=[], notes=[])], tldr="")
+    assert "tldr is empty" in evaluate_digests.find_structure_problems(digest, "body")
+
+
+def test_find_structure_problems_flags_invented_headings_on_short_post():
+    """A 261-char newsletter does not have three subjects"""
+    digest = _digest([
+        Topic(heading="One", actions=[], bring=[], notes=["a note"]),
+        Topic(heading="Two", actions=[], bring=[], notes=["another"]),
+    ])
+    problems = evaluate_digests.find_structure_problems(digest, "short body")
+    assert any("headings likely invented" in p for p in problems)
+
+
+def test_find_structure_problems_allows_multiple_topics_on_long_post():
+    digest = _digest([
+        Topic(heading="One", actions=[], bring=[], notes=["a note"]),
+        Topic(heading="Two", actions=[], bring=[], notes=["another"]),
+    ])
+    assert evaluate_digests.find_structure_problems(digest, "x" * 2000) == []
+
+
+def test_score_recall_counts_hits_and_missing():
+    digest = _digest([Topic(heading="Trip",
+                            actions=["Child must have a swimming diploma"],
+                            bring=[], notes=[])])
+    hits, total, missing = evaluate_digests.score_recall(digest, ["swimming diploma", "08:20"])
+    assert (hits, total, missing) == (1, 2, ["08:20"])
+
+
+def test_score_recall_with_no_expectations_is_neutral():
+    digest = _digest([Topic(heading="T", actions=["Do it"], bring=[], notes=[])])
+    assert evaluate_digests.score_recall(digest, []) == (0, 0, [])
+

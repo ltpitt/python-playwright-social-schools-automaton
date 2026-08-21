@@ -20,6 +20,7 @@ from get_social_schools_news import (  # noqa: E402
     process_article_content,
     Config,
     Digest,
+    Topic,
     Attachment,
     load_config,
     get_config,
@@ -344,8 +345,7 @@ def test_process_article_content(mock_playwright, mock_config):
         mock_digest.return_value = Digest(
             translated_title="Translated Title",
             tldr="Short summary",
-            action_items=[],
-            key_dates=[],
+            topics=[],
         )
 
         process_article_content(playwright, browser, context, article)
@@ -417,8 +417,7 @@ def test_process_article_content_missing_attachments(mock_playwright,
         mock_digest.return_value = Digest(
             translated_title="Translated Title",
             tldr="Short summary",
-            action_items=[],
-            key_dates=[],
+            topics=[],
         )
 
         process_article_content(playwright, browser, context, article)
@@ -523,8 +522,12 @@ def test_generate_digest(mock_config):
     digest_data = {
         "translated_title": "School Trip",
         "tldr": "Children need gym shoes",
-        "action_items": ["15 Aug - bring gym shoes"],
-        "key_dates": ["16 Aug - school closed"],
+        "topics": [{
+            "heading": "School trip",
+            "actions": ["15 Aug - bring gym shoes"],
+            "bring": [],
+            "notes": ["16 Aug - school closed"],
+        }],
     }
     mock_result = Mock()
     mock_result.returncode = 0
@@ -544,7 +547,7 @@ def test_generate_digest(mock_config):
         assert "--no-color" in cmd
         assert isinstance(result, Digest)
         assert result.translated_title == "School Trip"
-        assert result.action_items == ["15 Aug - bring gym shoes"]
+        assert result.topics[0].actions == ["15 Aug - bring gym shoes"]
 
 
 def test_generate_digest_with_attachments(mock_config):
@@ -553,9 +556,9 @@ def test_generate_digest_with_attachments(mock_config):
     mock_result.returncode = 0
     mock_result.stdout = json.dumps({
         "translated_title": "Form Required",
-        "tldr": "",
-        "action_items": ["15 Aug - sign and return the form"],
-        "key_dates": [],
+        "tldr": "A form must be returned",
+        "topics": [{"heading": "Form", "actions": ["15 Aug - sign and return the form"],
+                    "bring": [], "notes": []}],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
@@ -592,8 +595,7 @@ def test_generate_digest_retry_on_invalid_json(mock_config):
     valid_json = json.dumps({
         "translated_title": "Title",
         "tldr": "Summary",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     })
 
     invalid_result = Mock()
@@ -623,8 +625,7 @@ def test_generate_digest_fallback_on_second_failure(mock_config):
         assert mock_run.call_count == 2
         assert isinstance(result, Digest)
         assert result.translated_title == "School Trip"
-        assert result.action_items == []
-        assert result.key_dates == []
+        assert result.topics == []
 
 
 def test_copilot_command_has_no_tool_flags():
@@ -642,9 +643,8 @@ def test_generate_digest_includes_failed_attachment_in_prompt(mock_config):
     mock_result.returncode = 0
     mock_result.stdout = json.dumps({
         "translated_title": "Title",
-        "tldr": "",
-        "action_items": [],
-        "key_dates": [],
+        "tldr": "Summary",
+        "topics": [],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
@@ -665,8 +665,7 @@ def test_generate_digest_prompt_instructs_attachment_source_reference(mock_confi
     mock_result.stdout = json.dumps({
         "translated_title": "Title",
         "tldr": "Summary",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
@@ -682,9 +681,9 @@ def test_generate_digest_includes_pre_scan_hints_in_prompt(mock_config):
     mock_result.returncode = 0
     mock_result.stdout = json.dumps({
         "translated_title": "Title",
-        "tldr": "",
-        "action_items": ["15 aug - lever het formulier in"],
-        "key_dates": [],
+        "tldr": "Hand in the form",
+        "topics": [{"heading": "Form", "actions": ["15 aug - lever het formulier in"],
+                    "bring": [], "notes": []}],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
@@ -702,8 +701,7 @@ def test_generate_digest_omits_pre_scan_hints_when_none_found(mock_config):
     mock_result.stdout = json.dumps({
         "translated_title": "Title",
         "tldr": "Nothing notable.",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
@@ -713,37 +711,73 @@ def test_generate_digest_omits_pre_scan_hints_when_none_found(mock_config):
         assert "Pre-scan hints" not in prompt
 
 
-def test_generate_digest_prompt_allows_undated_action_items(mock_config):
-    """Undated obligations must have a home, and placeholder dates must be forbidden"""
+def test_generate_digest_prompt_demands_topic_grouping(mock_config):
+    """The prompt must ask for topic grouping, a separate bring list, and no invented dates"""
     mock_result = Mock()
     mock_result.returncode = 0
     mock_result.stdout = json.dumps({
         "translated_title": "Title",
         "tldr": "Summary",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     })
 
     with patch('subprocess.run', return_value=mock_result) as mock_run:
         generate_digest("Title", "Body", [])
 
         prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
-        assert "ONLY when the message states a date" in prompt
+        assert "Group the message into topics" in prompt
+        assert "ONE item per entry" in prompt
         assert "NEVER invent a date" in prompt
-        assert "Undated obligations still count" in prompt
-        assert "self-contained" in prompt
+        assert "Order topics by urgency" in prompt
+        assert "which group or class" in prompt
 
 
-def test_dict_to_digest_accepts_undated_action_item():
-    """An action item with no date prefix is valid content, not a schema violation"""
+def test_dict_to_digest_accepts_undated_entries():
+    """An entry with no date prefix is valid content, not a schema violation"""
     data = {
         "translated_title": "Test",
         "tldr": "",
-        "action_items": ["Provide 12 colouring pencils, markers and headphones"],
-        "key_dates": [],
+        "topics": [{
+            "heading": "School supplies",
+            "actions": ["Provide the listed school supplies"],
+            "bring": ["12 colouring pencils", "headphones"],
+            "notes": [],
+        }],
     }
     digest = _dict_to_digest(data)
-    assert digest.action_items == ["Provide 12 colouring pencils, markers and headphones"]
+    assert digest.topics[0].bring == ["12 colouring pencils", "headphones"]
+
+
+def test_dict_to_digest_drops_topics_with_no_entries():
+    """A heading with nothing under it is noise and must not reach the reader"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "Summary",
+        "topics": [
+            {"heading": "Empty", "actions": [], "bring": [], "notes": []},
+            {"heading": "Real", "actions": ["Do the thing"], "bring": [], "notes": []},
+        ],
+    }
+    digest = _dict_to_digest(data)
+    assert [t.heading for t in digest.topics] == ["Real"]
+
+
+def test_dict_to_digest_defaults_missing_entry_lists():
+    """A topic may omit lists it has nothing for"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "Summary",
+        "topics": [{"heading": "Trip", "actions": ["Pack a bag"]}],
+    }
+    digest = _dict_to_digest(data)
+    assert digest.topics[0].bring == []
+    assert digest.topics[0].notes == []
+
+
+def test_dict_to_digest_rejects_non_object_topic():
+    data = {"translated_title": "Test", "tldr": "Summary", "topics": ["not an object"]}
+    with pytest.raises(ValueError, match="must be an object"):
+        _dict_to_digest(data)
 
 
 def test_generate_digest_retry_prompt_demands_target_language(mock_config):
@@ -758,8 +792,7 @@ def test_generate_digest_retry_prompt_demands_target_language(mock_config):
     valid_result.stdout = json.dumps({
         "translated_title": "Titolo",
         "tldr": "Riassunto",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     })
 
     with patch('subprocess.run', side_effect=[invalid_result, valid_result]) as mock_run:
@@ -778,8 +811,7 @@ def test_generate_digest_retries_when_first_response_has_no_content(mock_config)
     empty_result.stdout = json.dumps({
         "translated_title": "Title",
         "tldr": "",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     })
 
     valid_result = Mock()
@@ -787,8 +819,7 @@ def test_generate_digest_retries_when_first_response_has_no_content(mock_config)
     valid_result.stdout = json.dumps({
         "translated_title": "Title",
         "tldr": "Now with content",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     })
 
     with patch('subprocess.run', side_effect=[empty_result, valid_result]) as mock_run:
@@ -817,92 +848,129 @@ def test_extract_action_hints_empty_when_no_matches():
     assert _extract_action_hints("Fijne dag allemaal, tot morgen.") == []
 
 
-def test_dict_to_digest_deduplicates_action_items_and_key_dates():
-    """Test that duplicate action items and key dates are removed preserving insertion order"""
+def test_dict_to_digest_deduplicates_entries_within_a_topic():
+    """Test that duplicate entries are removed preserving insertion order"""
     data = {
         "translated_title": "Test",
         "tldr": "",
-        "action_items": ["15 Aug - sign form", "15 Aug - sign form", "25 Aug - attend"],
-        "key_dates": ["4 Jul - holiday", "4 Jul - holiday"],
+        "topics": [{
+            "heading": "Trip",
+            "actions": ["15 Aug - sign form", "15 Aug - sign form", "25 Aug - attend"],
+            "bring": ["towel", "towel"],
+            "notes": ["4 Jul - holiday", "4 Jul - holiday"],
+        }],
     }
     digest = _dict_to_digest(data)
-    assert digest.action_items == ["15 Aug - sign form", "25 Aug - attend"]
-    assert digest.key_dates == ["4 Jul - holiday"]
+    topic = digest.topics[0]
+    assert topic.actions == ["15 Aug - sign form", "25 Aug - attend"]
+    assert topic.bring == ["towel"]
+    assert topic.notes == ["4 Jul - holiday"]
 
 
 def test_dict_to_digest_rejects_empty_digest():
-    """Test that a digest with no tldr, action items, or key dates is rejected as content-less"""
+    """Test that a digest with no tldr and no topic content is rejected as content-less"""
     data = {
         "translated_title": "Test",
         "tldr": "",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     }
     with pytest.raises(ValueError, match="no content"):
         _dict_to_digest(data)
 
 
 def test_dict_to_digest_accepts_tldr_only_digest():
-    """Test that a non-empty tldr alone is sufficient content, even with no items"""
+    """Test that a non-empty tldr alone is sufficient content, even with no topics"""
     data = {
         "translated_title": "Test",
         "tldr": "Nothing to do this week.",
-        "action_items": [],
-        "key_dates": [],
+        "topics": [],
     }
     digest = _dict_to_digest(data)
     assert digest.tldr == "Nothing to do this week."
 
 
-def test_dict_to_digest_rejects_non_string_action_item():
-    """Test that a non-string entry in action_items is rejected"""
+def test_dict_to_digest_rejects_non_string_action():
+    """Test that a non-string entry in a topic's actions is rejected"""
     data = {
         "translated_title": "Test",
         "tldr": "",
-        "action_items": [{"text": "15 Aug - sign form"}],
-        "key_dates": [],
+        "topics": [{"heading": "T", "actions": [{"text": "15 Aug - sign form"}],
+                    "bring": [], "notes": []}],
     }
     with pytest.raises(ValueError, match="non-empty strings"):
         _dict_to_digest(data)
 
 
-def test_dict_to_digest_rejects_blank_key_date():
-    """Test that a blank/whitespace-only entry in key_dates is rejected"""
+def test_dict_to_digest_rejects_blank_note():
+    """Test that a blank/whitespace-only entry is rejected"""
     data = {
         "translated_title": "Test",
         "tldr": "Summary",
-        "action_items": [],
-        "key_dates": ["   "],
+        "topics": [{"heading": "T", "actions": [], "bring": [], "notes": ["   "]}],
     }
     with pytest.raises(ValueError, match="non-empty strings"):
         _dict_to_digest(data)
 
 
 def test_render_digest_notification_with_items():
-    """Test rendering prefixes action items and key dates with bullets under labelled headers"""
+    """A topic renders as a heading, its actions, a single bring line, then its notes"""
     data = Digest(
         translated_title="School Event",
         tldr="Summary of event.",
-        action_items=["15 Aug - bring gym shoes"],
-        key_dates=["16 Jul - studiedag, no school"],
+        topics=[Topic(
+            heading="School trip",
+            actions=["15 Aug - be at school by 08:20"],
+            bring=["gym shoes", "towel"],
+            notes=["16 Jul - studiedag, no school"],
+        )],
     )
     result = render_digest_notification(data)
     assert result == (
-        "Summary of event.\n\nAction Items:\n\u25b8 15 Aug - bring gym shoes\n\n"
-        "Key Dates:\n\u25b8 16 Jul - studiedag, no school"
+        "Summary of event.\n\n"
+        "\u2501 School trip\n"
+        "\u25b8 15 Aug - be at school by 08:20\n"
+        "\U0001F392 Bring: gym shoes, towel\n"
+        "\u00b7 16 Jul - studiedag, no school"
     )
+
+
+def test_render_digest_notification_separates_topics():
+    """Distinct subjects stay visually separated instead of merging into one list"""
+    data = Digest(
+        translated_title="Class Letter",
+        tldr="Two subjects.",
+        topics=[
+            Topic(heading="School supplies", actions=[], bring=["blue pen"], notes=[]),
+            Topic(heading="Tests", actions=[], bring=[], notes=["07 Sep - topography"]),
+        ],
+    )
+    result = render_digest_notification(data)
+    assert "\u2501 School supplies\n\U0001F392 Bring: blue pen" in result
+    assert "\u2501 Tests\n\u00b7 07 Sep - topography" in result
+    assert result.count("\u2501") == 2
 
 
 def test_render_digest_notification_tldr_fallback():
-    """Test rendering emits 'No action needed' when no items exist, with tldr shown"""
+    """Test rendering emits 'No action needed' when no topic carries an action or bring item"""
     data = Digest(
         translated_title="School Info",
         tldr="The school will be closed for renovation.",
-        action_items=[],
-        key_dates=[],
+        topics=[],
     )
     result = render_digest_notification(data)
     assert result == "The school will be closed for renovation.\n\nNo action needed"
+
+
+def test_render_digest_notification_notes_only_needs_no_action():
+    """An informational post with only notes still tells the parent there is nothing to do"""
+    data = Digest(
+        translated_title="Newsletter",
+        tldr="This week's newsletter.",
+        topics=[Topic(heading="", actions=[], bring=[], notes=["16 Jul - studiedag"])],
+    )
+    result = render_digest_notification(data)
+    assert "No action needed" in result
+    assert "\u00b7 16 Jul - studiedag" in result
 
 
 def test_render_digest_notification_with_attachments():
@@ -910,11 +978,10 @@ def test_render_digest_notification_with_attachments():
     data = Digest(
         translated_title="Trip Form",
         tldr="",
-        action_items=["15 Aug - sign form"],
-        key_dates=[],
+        topics=[Topic(heading="", actions=["15 Aug - sign form"], bring=[], notes=[])],
     )
     result = render_digest_notification(data)
-    assert result == "Action Items:\n\u25b8 15 Aug - sign form"
+    assert result == "\u25b8 15 Aug - sign form"
 
 
 def test_render_digest_notification_with_failed_attachments():
@@ -922,8 +989,7 @@ def test_render_digest_notification_with_failed_attachments():
     data = Digest(
         translated_title="Trip Form",
         tldr="",
-        action_items=["15 Aug - sign form"],
-        key_dates=[],
+        topics=[Topic(heading="", actions=["15 Aug - sign form"], bring=[], notes=[])],
     )
     result = render_digest_notification(
         data,
@@ -939,13 +1005,12 @@ def test_render_digest_notification_with_original_title_and_date():
     data = Digest(
         translated_title="Trip Form",
         tldr="",
-        action_items=["15 Aug - sign form"],
-        key_dates=[],
+        topics=[Topic(heading="", actions=["15 Aug - sign form"], bring=[], notes=[])],
     )
     result = render_digest_notification(data, original_title="Formulier reis", post_date="1 Jul 10:00")
     assert result == (
         "\U0001F4C5 1 Jul 10:00\n\n"
-        "Action Items:\n\u25b8 15 Aug - sign form\n\n"
+        "\u25b8 15 Aug - sign form\n\n"
         "To find this post in Social Schools, look for: \"Formulier reis\""
     )
 
@@ -955,8 +1020,7 @@ def test_render_digest_notification_with_original_title_no_date():
     data = Digest(
         translated_title="Trip Form",
         tldr="",
-        action_items=[],
-        key_dates=[],
+        topics=[],
     )
     result = render_digest_notification(data, original_title="Formulier reis")
     assert result == (
@@ -970,11 +1034,10 @@ def test_render_digest_notification_with_date_no_original_title():
     data = Digest(
         translated_title="Trip Form",
         tldr="",
-        action_items=["15 Aug - sign form"],
-        key_dates=[],
+        topics=[Topic(heading="", actions=["15 Aug - sign form"], bring=[], notes=[])],
     )
     result = render_digest_notification(data, post_date="23 Jun 15:00")
-    assert result == "\U0001F4C5 23 Jun 15:00\n\nAction Items:\n\u25b8 15 Aug - sign form"
+    assert result == "\U0001F4C5 23 Jun 15:00\n\n\u25b8 15 Aug - sign form"
 
 
 def test_render_digest_notification_without_original_title_omits_footer():
@@ -982,8 +1045,7 @@ def test_render_digest_notification_without_original_title_omits_footer():
     data = Digest(
         translated_title="Trip Form",
         tldr="",
-        action_items=["15 Aug - sign form"],
-        key_dates=[],
+        topics=[Topic(heading="", actions=["15 Aug - sign form"], bring=[], notes=[])],
     )
     result = render_digest_notification(data)
     assert "To find this post" not in result
@@ -1215,8 +1277,8 @@ def test_generate_digest_via_openai_compatible_provider():
     mock_resp.json.return_value = {"choices": [{"message": {"content": json.dumps({
         "translated_title": "School Trip",
         "tldr": "Bring shoes",
-        "action_items": ["15 Aug - bring shoes"],
-        "key_dates": [],
+        "topics": [{"heading": "Trip", "actions": ["15 Aug - bring shoes"],
+                    "bring": [], "notes": []}],
     })}}]}
     with patch('get_social_schools_news.load_config', return_value=cfg):
         import get_social_schools_news
@@ -1771,8 +1833,7 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
         mock_digest.return_value = Digest(
             translated_title="Translated Title",
             tldr="",
-            action_items=["15 Aug - action"],
-            key_dates=[],
+            topics=[Topic(heading="", actions=["15 Aug - action"], bring=[], notes=[])],
         )
         mock_pdf.return_value = [Attachment(
             filename="doc.pdf", url="http://example.com/doc.pdf",
@@ -1801,7 +1862,7 @@ def test_process_article_content_with_pdf_and_docx(mock_playwright):
         mock_notify.assert_called_once_with({
             "en": (
                 "Translated Title",
-                "Action Items:\n\u25b8 15 Aug - action\n\n"
+                "\u25b8 15 Aug - action\n\n"
                 "To find this post in Social Schools, look for: \"Test Title\"",
             ),
         })

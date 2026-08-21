@@ -108,11 +108,19 @@ class Config:
 
 
 @dataclass
+class Topic:
+    """One subject within a message, mirroring how the school actually organised it."""
+    heading: str
+    actions: list
+    bring: list
+    notes: list
+
+
+@dataclass
 class Digest:
     translated_title: str
     tldr: str
-    action_items: list
-    key_dates: list
+    topics: list
 
 
 @dataclass
@@ -183,28 +191,39 @@ DIGEST_PROMPT_TEMPLATE = (
     "Required structure:\n"
     "{{\n"
     "  \"translated_title\": \"<article title in {language}>\",\n"
-    "  \"tldr\": \"<1-3 sentence summary in {language}, empty string if "
-    "action_items and key_dates cover everything>\",\n"
-    "  \"action_items\": [\"<what the parent must do, prefixed with 'DD Mon - ' only if dated>\"],\n"
-    "  \"key_dates\": [\"<event or closure, prefixed with 'DD Mon - ' only if dated>\"]\n"
+    "  \"tldr\": \"<one sentence in {language} saying what this message is about>\",\n"
+    "  \"topics\": [\n"
+    "    {{\n"
+    "      \"heading\": \"<short subject of this part of the message, in {language}>\",\n"
+    "      \"actions\": [\"<something the parent must do or arrange>\"],\n"
+    "      \"bring\": [\"<one physical item the child must be given or take along>\"],\n"
+    "      \"notes\": [\"<something to be aware of that needs no action>\"]\n"
+    "    }}\n"
+    "  ]\n"
     "}}\n\n"
     "Rules:\n"
-    "- action_items and key_dates are empty arrays [] if none exist.\n"
-    "- action_items: things the parent must actively do. key_dates: things to be aware of but not act on.\n"
+    "- Group the message into topics mirroring how it is actually organised (its own headings or "
+    "paragraph subjects). Most messages have 1-3 topics; use a single topic when the message covers "
+    "only one subject. Never split one subject across several topics.\n"
+    "- bring: physical things to provide or pack, ONE item per entry, named exactly as in the "
+    "message. Never also repeat them as actions \u2014 a packing list belongs in 'bring', not as "
+    "one action per object.\n"
+    "- actions: what the parent must actively do or arrange. notes: dates, times and facts needing "
+    "no action.\n"
+    "- actions, bring and notes are each an empty array [] when that topic has none.\n"
     "- Prefix an entry with 'DD Mon - ' ONLY when the message states a date for it. If there is no "
     "date, write the entry without any date prefix. NEVER invent a date or use a placeholder like "
     "'XX Sep' or 'date not specified'.\n"
-    "- Undated obligations still count: supplies to provide, forms to sign, things to arrange with "
-    "no deadline MUST appear as action items.\n"
-    "- Each entry must be self-contained and specific enough to act on without opening the original "
-    "message: list the actual items to bring, the exact times, and which group/class it applies to "
-    "when the message says so.\n"
-    "- Every true obligation MUST appear as an action item and every non-actionable date MUST appear "
-    "as a key date \u2014 use the pre-scan hints below (if any) so you "
-    "don't miss or misplace one, but never invent an item that isn't actually in the message.\n"
-    "- If an action item or key date is based on information found in an attachment rather than the "
+    "- Order topics by urgency: soonest date first, undated topics last.\n"
+    "- Say which group or class an entry applies to whenever the message specifies one.\n"
+    "- Every obligation in the message MUST appear somewhere, dated or not \u2014 use the pre-scan "
+    "hints below (if any) so you don't miss one, but never invent an item that isn't actually in "
+    "the message.\n"
+    "- Each entry must be specific enough to act on without opening the original message.\n"
+    "- If an entry is based on information found in an attachment rather than the "
     "article body itself, append the source attachment's filename in parentheses at the end, e.g. "
     "'DD Mon - what to do (see filename.pdf)'.\n"
+    "- tldr must never be empty.\n"
     "- All text values in {language}.\n"
     "- Output ONLY the JSON object, nothing else.\n\n"
     "--- MESSAGE START ---\n"
@@ -214,7 +233,7 @@ DIGEST_PROMPT_TEMPLATE = (
     "{hints}"
 )
 
-REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "action_items", "key_dates"}
+REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "topics"}
 
 _DATE_HINT_RE = re.compile(
     r'\b\d{1,2}\s*(?:jan|feb|mrt|maart|apr|mei|jun(?:i)?|jul(?:i)?|aug|sep|okt|nov|dec)[a-z]*\.?',
@@ -763,12 +782,21 @@ def _extract_json(text):
     raise ValueError("No valid JSON found in response")
 
 
+def _clean_entry_list(value, where):
+    """Validate a topic's entry list and drop duplicates, preserving order."""
+    if not isinstance(value, list):
+        raise ValueError(f"'{where}' must be a list")
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"'{where}' must contain only non-empty strings")
+    return list(dict.fromkeys(value))
+
+
 def _dict_to_digest(data: dict) -> Digest:
     """Validate a raw JSON dict's semantics (not just its shape) and convert it to a typed Digest.
 
     Raises ValueError on missing/malformed fields, non-string list items, or a digest that carries
-    no actual content (empty tldr with no action items or key dates) so callers can retry instead of
-    silently accepting an incomplete brief.
+    no actual content, so callers can retry instead of silently accepting an incomplete brief.
     """
     missing = REQUIRED_DIGEST_FIELDS - set(data.keys())
     if missing:
@@ -777,24 +805,32 @@ def _dict_to_digest(data: dict) -> Digest:
         raise ValueError("'translated_title' must be a non-empty string")
     if not isinstance(data.get("tldr"), str):
         raise ValueError("'tldr' must be a string")
-    for field in ("action_items", "key_dates"):
-        items = data[field]
-        if not isinstance(items, list):
-            raise ValueError(f"Field '{field}' must be a list")
-        for item in items:
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(f"Field '{field}' must contain only non-empty strings")
+    if not isinstance(data.get("topics"), list):
+        raise ValueError("'topics' must be a list")
 
-    action_items = list(dict.fromkeys(data["action_items"]))
-    key_dates = list(dict.fromkeys(data["key_dates"]))
-    if not data["tldr"].strip() and not action_items and not key_dates:
-        raise ValueError("Digest has no content: 'tldr', 'action_items', and 'key_dates' are all empty")
+    topics = []
+    for raw in data["topics"]:
+        if not isinstance(raw, dict):
+            raise ValueError("Each topic must be an object")
+        heading = raw.get("heading", "")
+        if not isinstance(heading, str):
+            raise ValueError("'heading' must be a string")
+        topic = Topic(
+            heading=heading.strip(),
+            actions=_clean_entry_list(raw.get("actions", []), "actions"),
+            bring=_clean_entry_list(raw.get("bring", []), "bring"),
+            notes=_clean_entry_list(raw.get("notes", []), "notes"),
+        )
+        if topic.actions or topic.bring or topic.notes:
+            topics.append(topic)
+
+    if not data["tldr"].strip() and not topics:
+        raise ValueError("Digest has no content: 'tldr' is empty and no topic carries any entry")
 
     return Digest(
         translated_title=data["translated_title"],
         tldr=data["tldr"],
-        action_items=action_items,
-        key_dates=key_dates,
+        topics=topics,
     )
 
 
@@ -895,15 +931,17 @@ def render_digest_notification(data: Digest, failed_attachments=None, original_t
     if tldr:
         sections.append(tldr)
 
-    if data.action_items:
-        action_block = "Action Items:\n" + "\n".join(f"\u25b8 {item}" for item in data.action_items)
-        sections.append(action_block)
+    for topic in data.topics:
+        lines = []
+        if topic.heading:
+            lines.append(f"\u2501 {topic.heading}")
+        lines.extend(f"\u25b8 {action}" for action in topic.actions)
+        if topic.bring:
+            lines.append("\U0001F392 Bring: " + ", ".join(topic.bring))
+        lines.extend(f"\u00b7 {note}" for note in topic.notes)
+        sections.append("\n".join(lines))
 
-    if data.key_dates:
-        dates_block = "Key Dates:\n" + "\n".join(f"\u25b8 {d}" for d in data.key_dates)
-        sections.append(dates_block)
-
-    if not data.action_items and not data.key_dates:
+    if not any(topic.actions or topic.bring for topic in data.topics):
         sections.append("No action needed")
 
     if failed_attachments:
@@ -956,7 +994,7 @@ def generate_digest(title, body, attachments, language=None):
             f"actual content. Respond with ONLY this JSON structure (no markdown, no explanation), "
             f"with every text value written in {language}:\n"
             '{\n  "translated_title": "...",\n  "tldr": "...",\n'
-            '  "action_items": [...],\n  "key_dates": [...]\n}\n\n'
+            '  "topics": [{"heading": "...", "actions": [...], "bring": [...], "notes": [...]}]\n}\n\n'
             f"Previous invalid response:\n{raw}\n\n"
             f"Original prompt:\n{prompt}"
         )
@@ -973,8 +1011,7 @@ def generate_digest(title, body, attachments, language=None):
             digest = Digest(
                 translated_title=title,
                 tldr="(Could not generate summary \u2014 open the original post for details)",
-                action_items=[],
-                key_dates=[],
+                topics=[],
             )
 
     logger.info("Digest validated successfully")

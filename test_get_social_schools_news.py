@@ -977,6 +977,47 @@ def test_render_digest_notification_separates_topics():
     assert result.count("\u2501") == 2
 
 
+def test_render_digest_notification_lifts_a_shared_date_into_the_heading():
+    """One day repeated down every line is noise; state it once, above them"""
+    data = Digest(
+        translated_title="Class Letter",
+        tldr="One day out.",
+        topics=[Topic(
+            heading="School trip",
+            actions=["01 Sep - be at school by 08:20", "01 Sep - inform after-school care"],
+            bring=["towel"],
+            notes=["01 Sep - the bus returns around 14:30"],
+        )],
+    )
+
+    result = render_digest_notification(data)
+
+    assert "\u2501 01 Sep \u00b7 School trip" in result
+    assert "\u25b8 be at school by 08:20" in result
+    assert "\u00b7 the bus returns around 14:30" in result
+    assert result.count("01 Sep") == 1
+
+
+def test_render_digest_notification_keeps_dates_when_a_topic_spans_days():
+    """Lifting a date only works when there is one; differing dates stay per entry"""
+    data = Digest(
+        translated_title="Class Letter",
+        tldr="Two days.",
+        topics=[Topic(
+            heading="Tests",
+            actions=[],
+            bring=[],
+            notes=["07 Sep - topography test", "11 Sep - English test"],
+        )],
+    )
+
+    result = render_digest_notification(data)
+
+    assert "\u2501 Tests" in result
+    assert "\u00b7 07 Sep - topography test" in result
+    assert "\u00b7 11 Sep - English test" in result
+
+
 def test_render_digest_notification_tldr_fallback():
     """Test rendering emits 'No action needed' when no topic carries an action or bring item"""
     data = Digest(

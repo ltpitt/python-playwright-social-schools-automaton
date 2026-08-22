@@ -1057,6 +1057,27 @@ def _get_post_date(article, today=None):
     return result
 
 
+# The model is told to date every entry it can, which is right for correctness
+# but reads badly when a whole topic is one day: '01 Sep -' down every line.
+# Lifting the shared date into the heading is a rendering job, not a prompt one.
+_ENTRY_DATE_PREFIX_RE = re.compile(r'^(\d{1,2}\s+[A-Za-z]{3})\s*-\s*')
+_MIN_ENTRIES_TO_LIFT_DATE = 2
+
+
+def _shared_entry_date(entries):
+    """The one date every dated entry carries, or None if they differ or are too few."""
+    dates = [match.group(1) for match in
+             (_ENTRY_DATE_PREFIX_RE.match(entry) for entry in entries) if match]
+    if len(dates) >= _MIN_ENTRIES_TO_LIFT_DATE and len(set(dates)) == 1:
+        return dates[0]
+    return None
+
+
+def _without_date_prefix(entry, shared_date):
+    match = _ENTRY_DATE_PREFIX_RE.match(entry)
+    return entry[match.end():] if match and match.group(1) == shared_date else entry
+
+
 def render_digest_notification(data: Digest, failed_attachments=None, original_title=None, post_date=None):
     sections = []
 
@@ -1069,12 +1090,18 @@ def render_digest_notification(data: Digest, failed_attachments=None, original_t
 
     for topic in data.topics:
         lines = []
-        if topic.heading:
-            lines.append(f"\u2501 {topic.heading}")
-        lines.extend(f"\u25b8 {action}" for action in topic.actions)
+        shared_date = _shared_entry_date(topic.actions + topic.notes)
+        heading = topic.heading
+        if shared_date:
+            heading = f"{shared_date} \u00b7 {heading}" if heading else shared_date
+        if heading:
+            lines.append(f"\u2501 {heading}")
+        lines.extend(f"\u25b8 {_without_date_prefix(action, shared_date)}"
+                     for action in topic.actions)
         if topic.bring:
             lines.append("\U0001F392 Bring: " + ", ".join(topic.bring))
-        lines.extend(f"\u00b7 {note}" for note in topic.notes)
+        lines.extend(f"\u00b7 {_without_date_prefix(note, shared_date)}"
+                     for note in topic.notes)
         sections.append("\n".join(lines))
 
     if not any(topic.actions or topic.bring for topic in data.topics):

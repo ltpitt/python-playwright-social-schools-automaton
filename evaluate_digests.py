@@ -40,6 +40,7 @@ _MONTH_ABBR_BY_DUTCH_PREFIX = {nl[:3].lower(): abbr for nl, abbr in _DUTCH_MONTH
 _DUPLICATE_JACCARD = 0.7
 _SHARED_PREFIX_TOKENS = 4
 _SHARED_PREFIX_LIMIT = 3
+_SAME_DATE_CLUSTER_LIMIT = 3
 # A very short post has one subject; inventing headings for it is noise.
 _SINGLE_TOPIC_MAX_CHARS = 400
 _MAX_TOPICS = 6
@@ -68,6 +69,8 @@ _OBLIGATION_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 _OBLIGATION_WINDOW = 200
+# Matches the digest's own date-prefix convention, "DD Mon - ...".
+_ENTRY_DATE_RE = re.compile(r'^(\d{1,2}\s+[A-Za-z]{3})\s*-\s*')
 
 
 def _entry_lists(digest):
@@ -141,6 +144,27 @@ def find_near_duplicates(digest):
         label = f"{heading or '(untitled)'}/{field}"
         violations += _overlapping_pairs(entries, label)
         violations += _shared_openings(entries, label)
+    return violations
+
+
+def find_same_date_clusters(digest):
+    """Many entries under one topic sharing one date, e.g. a single event split
+
+    across several near-duplicate action/note lines instead of one entry
+    (arrival time as an action, departure time as a note, return time as
+    another note - all really one field trip)."""
+    violations = []
+    for topic in digest.topics:
+        by_date = {}
+        for entry in topic.actions + topic.notes:
+            match = _ENTRY_DATE_RE.match(entry)
+            if match:
+                by_date.setdefault(match.group(1), []).append(entry)
+        for entry_date, entries in by_date.items():
+            if len(entries) >= _SAME_DATE_CLUSTER_LIMIT:
+                violations.append(
+                    f"{len(entries)} entries in {topic.heading or '(untitled)'} are all "
+                    f"dated {entry_date!r} - consider consolidating into fewer entries")
     return violations
 
 
@@ -230,6 +254,7 @@ def advisory_warnings(digest, case):
     text = source_text(case)
     return (
         find_near_duplicates(digest)
+        + find_same_date_clusters(digest)
         + find_missing_hint_dates(digest, text)
         + find_bring_repeated_in_actions(digest)
         + [problem for problem in find_structure_problems(digest, text)

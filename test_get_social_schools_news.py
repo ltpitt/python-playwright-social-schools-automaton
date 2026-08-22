@@ -735,6 +735,7 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "Purchase the" in prompt
         assert "24-hour HH:MM" in prompt
         assert "Never use" in prompt and "AM/PM" in prompt
+        assert "Combine closely related facts" in prompt
 
 
 def test_dict_to_digest_accepts_undated_entries():
@@ -2218,6 +2219,33 @@ def test_find_missing_hint_dates_ignores_newsletter_filler():
             "museum aan het Klein Heiligland.")
     digest = _digest([Topic(heading="News", actions=[], bring=[], notes=["a note"])])
     assert evaluate_digests.find_missing_hint_dates(digest, body) == []
+
+
+def test_find_same_date_clusters_flags_one_event_split_across_many_lines():
+    """A single field trip restated across arrival/departure/return lines"""
+    digest = _digest([Topic(
+        heading="Field Trip",
+        actions=[
+            "01 Sep - Ensure child arrives at school by 08:20 for the 08:30 bus.",
+            "01 Sep - Inform after-school care about a possible late return.",
+        ],
+        bring=[],
+        notes=[
+            "01 Sep - Field trip to Poldersport is scheduled.",
+            "01 Sep - Departure by bus from school at 08:30.",
+            "01 Sep - Expected return to school around 14:30.",
+        ])])
+    warnings = evaluate_digests.find_same_date_clusters(digest)
+    assert any("all dated '01 Sep'" in w for w in warnings)
+
+
+def test_find_same_date_clusters_allows_few_entries_on_one_date():
+    digest = _digest([Topic(
+        heading="Trip",
+        actions=["01 Sep - Sign the permission form."],
+        bring=[],
+        notes=["01 Sep - Bus departs at 08:30."])])
+    assert evaluate_digests.find_same_date_clusters(digest) == []
 
 
 def test_find_missing_hint_dates_still_flags_school_event():

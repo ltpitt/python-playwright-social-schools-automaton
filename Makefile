@@ -11,7 +11,7 @@ help:
 	@echo "  corpus      Update corpus with new posts and attachments"
 	@echo "  product     Generate product JSON from the local corpus"
 	@echo "  eval        Evaluate the product JSON (does not call the model)"
-	@echo "  eval-cycle  Pull, regenerate, evaluate, and send one live notification"
+	@echo "  eval-cycle  Pull, regenerate, send one live notification, then evaluate"
 	@echo "  unprocess-last  Forget the last processed article so 'make run' re-sends it"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
 	@echo "  clean    Remove Python cache directories"
@@ -49,20 +49,19 @@ product:
 eval:
 	python evaluate_digests.py
 
-# Complete cycle. Always deliver the live spot-check, but preserve eval failure.
+# Complete cycle. Eval runs last so its table is the final output, ready to copy.
+# Neither leg short-circuits the other, but both failures still surface.
 eval-cycle:
 	@set -e; \
 	git pull --ff-only; \
 	$(MAKE) corpus; \
 	$(MAKE) product FORCE=1; \
-	set +e; \
-	$(MAKE) eval; \
-	eval_status=$$?; \
-	set -e; \
 	$(MAKE) unprocess-last; \
 	set +e; \
 	$(MAKE) run; \
 	run_status=$$?; \
+	$(MAKE) eval; \
+	eval_status=$$?; \
 	set -e; \
 	if [ $$run_status -ne 0 ]; then exit $$run_status; fi; \
 	exit $$eval_status

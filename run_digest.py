@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 
-from evaluate_digests import structural_violations
+from evaluate_digests import advisory_warnings, structural_violations
 from get_social_schools_news import (
     Attachment,
     DIGEST_PROMPT_TEMPLATE,
@@ -77,6 +77,7 @@ def run_case(case):
                 "notification": rendered,
             },
             "violations": structural_violations(digest, case),
+            "warnings": advisory_warnings(digest, case),
             "error": None,
         }
     except Exception as exc:
@@ -85,6 +86,7 @@ def run_case(case):
             "source": case,
             "product": None,
             "violations": [f"digest failed: {exc}"],
+            "warnings": [],
             "error": f"{type(exc).__name__}: {exc}",
         }
 

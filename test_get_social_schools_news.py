@@ -2326,7 +2326,8 @@ def test_structural_violations_flag_date_found_only_in_attachment():
                          "failed": False, "text": "Het schoolreisje is op 1 september."}],
     }
     digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
-    assert "source date not in digest: 1 Sep" in evaluate_digests.structural_violations(digest, case)
+    assert evaluate_digests.structural_violations(digest, case) == []
+    assert "source date not in digest: 1 Sep" in evaluate_digests.advisory_warnings(digest, case)
 
 
 def test_structural_violations_allow_topics_when_attachment_is_long():

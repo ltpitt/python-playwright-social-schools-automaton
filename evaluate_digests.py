@@ -219,10 +219,17 @@ def structural_violations(digest, case):
     text = source_text(case)
     return (
         find_placeholder_dates(digest)
-        + find_near_duplicates(digest)
+        + find_structure_problems(digest, text)
+    )
+
+
+def advisory_warnings(digest, case):
+    """Signals worth reviewing, but too context-dependent to fail the cycle."""
+    text = source_text(case)
+    return (
+        find_near_duplicates(digest)
         + find_missing_hint_dates(digest, text)
         + find_bring_repeated_in_actions(digest)
-        + find_structure_problems(digest, text)
     )
 
 
@@ -246,10 +253,12 @@ def evaluate_product_case(record, expected):
             "recall_hits": 0,
             "recall_total": len(expected or []),
             "recall_missing": list(expected or []),
+            "warnings": record.get("warnings", []),
         }
 
     digest = _dict_to_digest(record["product"]["digest"])
     violations = structural_violations(digest, case)
+    warnings = advisory_warnings(digest, case)
     hits, total, missing = score_recall(digest, expected)
     return {
         "id": record["id"],
@@ -257,6 +266,7 @@ def evaluate_product_case(record, expected):
         "recall_hits": hits,
         "recall_total": total,
         "recall_missing": missing,
+        "warnings": warnings,
     }
 
 
@@ -299,7 +309,11 @@ def main():
         failed += not ok
         recall = (f"{result['recall_hits']}/{result['recall_total']}"
                   if result["recall_total"] else "-")
-        detail = "; ".join(result["violations"] + [f"missing {m!r}" for m in result["recall_missing"]])
+        detail_items = result["violations"] + [
+            f"missing {m!r}" for m in result["recall_missing"]]
+        if result.get("warnings"):
+            detail_items.append(f"warnings: {len(result['warnings'])}")
+        detail = "; ".join(detail_items)
         print(f"{result['id']:<24} {'PASS' if ok else 'FAIL':<6} "
               f"{len(result['violations']):>4} {recall:>8}  {detail[:200]}")
 

@@ -49,14 +49,23 @@ product:
 eval:
 	python evaluate_digests.py
 
-# Complete cycle. Evaluation failure stops the live notification step.
+# Complete cycle. Always deliver the live spot-check, but preserve eval failure.
 eval-cycle:
-	git pull --ff-only
-	$(MAKE) corpus
-	$(MAKE) product FORCE=1
-	$(MAKE) eval
-	$(MAKE) unprocess-last
-	$(MAKE) run
+	@set -e; \
+	git pull --ff-only; \
+	$(MAKE) corpus; \
+	$(MAKE) product FORCE=1; \
+	set +e; \
+	$(MAKE) eval; \
+	eval_status=$$?; \
+	set -e; \
+	$(MAKE) unprocess-last; \
+	set +e; \
+	$(MAKE) run; \
+	run_status=$$?; \
+	set -e; \
+	if [ $$run_status -ne 0 ]; then exit $$run_status; fi; \
+	exit $$eval_status
 
 # Drop the most recently processed article so the next 'make run' re-scrapes,
 # re-generates and re-sends its real notification (for eyeballing prompt changes).

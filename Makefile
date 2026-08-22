@@ -1,4 +1,4 @@
-.PHONY: help install lint test check run loop clean corpus product eval eval-cycle
+.PHONY: help install lint test check run loop clean corpus product eval eval-cycle unprocess-last
 
 help:
 	@echo "Usage: make <target>"
@@ -12,6 +12,7 @@ help:
 	@echo "  product     Generate product JSON from the local corpus"
 	@echo "  eval        Evaluate the product JSON (does not call the model)"
 	@echo "  eval-cycle  Run corpus -> product -> eval in order"
+	@echo "  unprocess-last  Forget the last processed article so 'make run' re-sends it"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
 	@echo "  clean    Remove Python cache directories"
 
@@ -52,6 +53,11 @@ eval:
 eval-cycle: corpus
 	$(MAKE) product
 	$(MAKE) eval
+
+# Drop the most recently processed article so the next 'make run' re-scrapes,
+# re-generates and re-sends its real notification (for eyeballing prompt changes).
+unprocess-last:
+	python -c "import json; p='processed_articles.json'; d=json.load(open(p)) if __import__('os').path.exists(p) else []; removed=d.pop() if d else None; json.dump(d, open(p, 'w')); print(f'Removed {removed}; next run will re-process it' if removed else 'Nothing to remove')"
 
 # Run one loop iteration — clears previous output first
 loop:

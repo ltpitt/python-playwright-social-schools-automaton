@@ -740,6 +740,22 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "request for parents to volunteer" in prompt
 
 
+def test_generate_digest_prompt_demands_a_substantive_tldr(mock_config):
+    """A tldr describing the message ('this message provides...') helps no parent"""
+    mock_result = Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = json.dumps({
+        "translated_title": "Title", "tldr": "Summary", "topics": [],
+    })
+
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        generate_digest("Title", "Body", [])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert "state the substance rather than describe the message" in prompt
+        assert "This message provides important information" in prompt
+
+
 def test_dict_to_digest_accepts_undated_entries():
     """An entry with no date prefix is valid content, not a schema violation"""
     data = {

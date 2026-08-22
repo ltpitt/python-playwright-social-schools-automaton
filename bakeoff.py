@@ -58,9 +58,9 @@ def _cost(summary):
 
 def format_table(summaries):
     lines = [
-        f"{'variant':<34} {'holdout':>8} {'tune':>8} {'recall':>7} "
+        f"{'variant':<34} {'holdout':>8} {'tune':>8} {'score':>6} {'recall':>7} "
         f"{'viol':>5} {'warn':>5} {'unstable':>9} {'cost':>9} {'sec/case':>9}",
-        "-" * 102,
+        "-" * 110,
     ]
     for summary in summaries:
         holdout = summary["splits"]["holdout"]
@@ -74,6 +74,7 @@ def format_table(summaries):
             f"{summary['spec']:<34} "
             f"{holdout['passed']:>3}/{holdout['cases']:<4} "
             f"{tune['passed']:>3}/{tune['cases']:<4} "
+            f"{overall['score']:>6.2f} "
             f"{recall:>7} {overall['violations']:>5} {overall['warnings']:>5} "
             f"{overall['unstable']:>9} "
             f"{('$%.4f' % cost) if cost is not None else 'n/a':>9} "
@@ -82,31 +83,43 @@ def format_table(summaries):
     return "\n".join(lines)
 
 
+# Below this, a score difference is noise on a corpus of a few dozen cases.
+_MEANINGFUL_SCORE_GAIN = 0.02
+
+
 def format_verdict(summaries):
     """Say what the numbers imply about paying more, in the plainest terms available."""
     if len(summaries) < 2:
         return ""
     baseline = summaries[0]
+    base_score = baseline["splits"]["all"]["score"]
     base_pass = baseline["splits"]["all"]["passed"]
     base_cost = _cost(baseline)
-    lines = [f"\nAgainst the baseline {baseline['spec']} ({base_pass} case(s) passing):"]
+    lines = [f"\nAgainst the baseline {baseline['spec']} (score {base_score:.2f}, "
+             f"{base_pass} case(s) passing):"]
     for summary in summaries[1:]:
-        gained = summary["splits"]["all"]["passed"] - base_pass
+        gained = summary["splits"]["all"]["score"] - base_score
         cost = _cost(summary)
         if cost is None or base_cost is None or base_cost == 0:
             multiple = "cost not reported"
         else:
             multiple = f"{cost / base_cost:.1f}x the cost"
-        if gained > 0:
-            verdict = f"+{gained} case(s) for {multiple}"
-        elif gained == 0:
-            verdict = f"no quality gain for {multiple} — not worth it"
+        if gained >= _MEANINGFUL_SCORE_GAIN:
+            verdict = f"score {gained:+.2f} for {multiple}"
+        elif gained <= -_MEANINGFUL_SCORE_GAIN:
+            verdict = f"score {gained:+.2f}, i.e. worse, for {multiple}"
         else:
-            verdict = f"{gained} case(s), i.e. worse, for {multiple}"
+            verdict = f"no real gain ({gained:+.2f}) for {multiple} — not worth it"
         lines.append(f"  {summary['spec']:<34} {verdict}")
     lines.append(
         "\nJudge on the holdout column: the tuning cases helped write the prompt, "
         "so they flatter it.")
+    if all(s["splits"]["all"]["passed"] == s["splits"]["all"]["cases"] for s in summaries):
+        lines.append(
+            "Every candidate passes every case, so the pass columns say nothing here. "
+            "The ranking above is the graded score; a corpus this small cannot justify "
+            "an upgrade on a score gap under "
+            f"{_MEANINGFUL_SCORE_GAIN:.2f}.")
     return "\n".join(lines)
 
 

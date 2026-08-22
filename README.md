@@ -37,12 +37,14 @@ The `openai_compatible` provider works with any OpenAI-compatible `/chat/complet
 Don't guess — measure. `make bakeoff MODELS='model-a model-b@medium'` replays the same local corpus through each candidate, scores every digest the same way, and prints quality against the money actually charged:
 
 ```
-variant                             holdout     tune  recall  viol  warn  unstable      cost  sec/case
-google/gemini-2.5-flash               3/4      10/12     89%     1     6         0   $0.0121       2.4
-google/gemini-2.5-flash@medium        4/4      11/12     94%     0     4         0   $0.0298       5.1
+variant                             holdout     tune  score  recall  viol  warn  unstable      cost  sec/case
+google/gemini-2.5-flash               4/4      16/16   0.89    100%     0    40         0   $0.0790       2.4
+google/gemini-2.5-flash@medium        4/4      16/16   0.96    100%     0    16         0   $0.1900       5.1
 ```
 
-A candidate is `model` or `model@reasoning_effort`, so raising the thinking budget on a cheap model competes head-to-head with buying a bigger one — usually the cheaper upgrade. Judge on the **holdout** column: those cases were held back from prompt tuning, so they are the ones that say whether a change generalises. `make bakeoff` costs real money (every case is regenerated for every candidate) and is never part of `make check`. Method and its limits: `docs/adr/0005-model-selection-by-bakeoff.md`.
+A candidate is `model` or `model@reasoning_effort`, so raising the thinking budget on a cheap model competes head-to-head with buying a bigger one — usually the cheaper upgrade. Judge on the **holdout** column: those cases were held back from prompt tuning, so they are the ones that say whether a change generalises.
+
+Once every case passes, pass/fail can no longer rank anything, so ranking falls to **score** — recall, minus 0.5 per violation and 0.05 per warning. A gap under 0.02 on a corpus this small is noise. `make bakeoff` costs real money (every case is regenerated for every candidate) and is never part of `make check`. Method and its limits: `docs/adr/0005-model-selection-by-bakeoff.md`.
 
 ## Notify multiple people
 

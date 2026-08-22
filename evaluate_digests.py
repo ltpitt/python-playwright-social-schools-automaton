@@ -230,6 +230,23 @@ def find_bring_repeated_in_actions(digest):
     return violations
 
 
+# A tldr that describes the message instead of summarising it. The parent who
+# reads only this line learns nothing, which defeats the point of the line.
+_META_TLDR_RE = re.compile(
+    r'\b(this (message|post|letter|newsletter|article)|'
+    r'the (message|post|letter) (provides|contains|informs)|'
+    r'provides (important )?information|informs parents|outlines several)\b',
+    re.IGNORECASE,
+)
+
+
+def find_meta_tldr(digest):
+    """A tldr that talks about the message rather than saying what happens."""
+    if _META_TLDR_RE.search(digest.tldr):
+        return [f"tldr describes the message instead of summarising it: {digest.tldr!r}"]
+    return []
+
+
 def find_structure_problems(digest, text):
     violations = []
     if not digest.tldr.strip():
@@ -272,6 +289,7 @@ def advisory_warnings(digest, case):
         + find_same_date_clusters(digest)
         + find_missing_hint_dates(digest, text)
         + find_bring_repeated_in_actions(digest)
+        + find_meta_tldr(digest)
         + [problem for problem in find_structure_problems(digest, text)
            if "tldr is empty" not in problem]
     )
@@ -405,10 +423,12 @@ def _split_summary(results, min_recall):
     hits = sum(r["recall_hits"] for r in results)
     total = sum(r["recall_total"] for r in results)
     passed = sum(1 for r in results if case_passed(r, min_recall))
+    scores = [quality_score(r) for r in results]
     return {
         "cases": len(results),
         "passed": passed,
         "pass_rate": round(passed / len(results), 3) if results else 0.0,
+        "score": round(sum(scores) / len(scores), 3) if scores else 0.0,
         "recall_hits": hits,
         "recall_total": total,
         "recall": round(hits / total, 3) if total else None,
@@ -422,6 +442,29 @@ def case_passed(result, min_recall):
     recall_ok = (result["recall_total"] == 0
                  or result["recall_hits"] / result["recall_total"] >= min_recall)
     return not result["violations"] and recall_ok
+
+
+# Once every case passes, pass/fail can no longer rank two models — and ranking
+# models is the whole point of generating products. These weights turn the same
+# evidence into a graded score: a violation costs ten warnings, because a
+# violation is a proven defect and a warning is only a suspicion.
+_VIOLATION_PENALTY = 0.5
+_WARNING_PENALTY = 0.05
+
+
+def quality_score(result):
+    """Graded 0-1 quality for one case, so models stay comparable at a 100% pass rate."""
+    recall = (result["recall_hits"] / result["recall_total"]
+              if result["recall_total"] else 1.0)
+    penalty = (_VIOLATION_PENALTY * len(result["violations"])
+               + _WARNING_PENALTY * len(result["warnings"]))
+    return max(0.0, recall - penalty)
+
+
+def is_saturated(summary):
+    """Whether the gate has stopped discriminating, leaving only the score to."""
+    overall = summary["splits"]["all"]
+    return bool(overall["cases"]) and overall["passed"] == overall["cases"]
 
 
 def build_summary(product, results, min_recall):
@@ -474,13 +517,20 @@ def print_summary(summary):
         if not block["cases"]:
             continue
         recall = f"{block['recall']:.0%}" if block["recall"] is not None else "n/a"
-        print(f"{name:<8} {block['passed']}/{block['cases']} passed, recall {recall}, "
-              f"{block['violations']} violation(s), {block['warnings']} warning(s)"
+        print(f"{name:<8} {block['passed']}/{block['cases']} passed, score {block['score']:.2f}, "
+              f"recall {recall}, {block['violations']} violation(s), "
+              f"{block['warnings']} warning(s)"
               + (f", {block['unstable']} unstable" if block["unstable"] else ""))
     usage = summary["usage"]
     if usage.get("cost_usd") is not None:
         print(f"cost     ${usage['cost_usd']:.4f} for {summary['splits']['all']['cases']} case(s) "
               f"({usage.get('total_tokens', 0)} tokens)")
+    if is_saturated(summary):
+        overall = summary["splits"]["all"]
+        print(f"\nEvery case passes, so the gate can no longer tell two models apart. "
+              f"The remaining signal is the score ({overall['score']:.2f}) and the "
+              f"{overall['warnings']} warning(s). To make the gate discriminate again, add "
+              f"must_not_mention phrases and expectations for what is still being missed.")
 
 
 def main():

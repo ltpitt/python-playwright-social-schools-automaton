@@ -9,9 +9,12 @@ from bakeoff import format_verdict, parse_variant
 from evaluate_digests import (
     build_summary,
     evaluate_product_case,
+    find_meta_tldr,
     find_unfaithful_claims,
+    is_saturated,
     load_expectations,
     phrase_present,
+    quality_score,
     score_recall,
     split_for,
 )
@@ -302,17 +305,56 @@ def test_parse_variant_splits_model_from_reasoning_effort():
     assert parse_variant("qwen2.5:7b")["model"] == "qwen2.5:7b"
 
 
-def _summary(spec, passed, cost):
-    split = {"cases": 4, "passed": passed, "pass_rate": passed / 4, "recall_hits": 0,
-             "recall_total": 0, "recall": None, "violations": 0, "warnings": 0, "unstable": 0}
+def _summary(spec, passed, cost, score=1.0, warnings=0):
+    split = {"cases": 4, "passed": passed, "pass_rate": passed / 4, "score": score,
+             "recall_hits": 0, "recall_total": 0, "recall": None, "violations": 0,
+             "warnings": warnings, "unstable": 0}
     return {"spec": spec, "usage": {"cost_usd": cost},
             "splits": {"all": split, "tune": split, "holdout": split}}
 
 
 def test_format_verdict_calls_out_paying_more_for_nothing():
-    verdict = format_verdict([_summary("cheap", 3, 0.01), _summary("pricey", 3, 0.10)])
+    verdict = format_verdict([_summary("cheap", 3, 0.01, score=0.90),
+                              _summary("pricey", 3, 0.10, score=0.90)])
     assert "not worth it" in verdict
     assert "10.0x the cost" in verdict
 
-    better = format_verdict([_summary("cheap", 2, 0.01), _summary("pricey", 4, 0.05)])
-    assert "+2 case(s)" in better
+    better = format_verdict([_summary("cheap", 2, 0.01, score=0.70),
+                             _summary("pricey", 4, 0.05, score=0.95)])
+    assert "score +0.25" in better
+
+
+def test_format_verdict_still_ranks_when_every_case_passes():
+    """A saturated gate must not report every model as equal — that hides the answer"""
+    verdict = format_verdict([_summary("cheap", 4, 0.01, score=0.80, warnings=40),
+                              _summary("pricey", 4, 0.08, score=0.95, warnings=10)])
+
+    assert "score +0.15" in verdict
+    assert "pass columns say nothing here" in verdict
+
+
+def test_quality_score_grades_warnings_below_violations():
+    """Warnings must move the score, or a saturated eval cannot rank models"""
+    clean = {"recall_hits": 2, "recall_total": 2, "violations": [], "warnings": []}
+    noisy = {"recall_hits": 2, "recall_total": 2, "violations": [], "warnings": ["a", "b"]}
+    broken = {"recall_hits": 2, "recall_total": 2, "violations": ["x"], "warnings": []}
+
+    assert quality_score(clean) == 1.0
+    assert quality_score(noisy) == pytest.approx(0.9)
+    assert quality_score(broken) == pytest.approx(0.5)
+    assert quality_score({"recall_hits": 0, "recall_total": 0,
+                          "violations": [], "warnings": []}) == 1.0
+
+
+def test_is_saturated_detects_a_gate_that_stopped_discriminating():
+    assert is_saturated({"splits": {"all": {"cases": 4, "passed": 4}}}) is True
+    assert is_saturated({"splits": {"all": {"cases": 4, "passed": 3}}}) is False
+
+
+def test_find_meta_tldr_flags_a_summary_about_the_message():
+    """'This message provides information about X' tells a parent nothing"""
+    meta = Digest("t", "This message provides important information for parents.", [])
+    useful = Digest("t", "School trip on 01 Sep: pack a raincoat and a packed lunch.", [])
+
+    assert find_meta_tldr(meta)
+    assert find_meta_tldr(useful) == []

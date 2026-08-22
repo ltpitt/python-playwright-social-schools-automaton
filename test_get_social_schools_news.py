@@ -733,6 +733,8 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "which group or class" in prompt
         assert "date not specified" in prompt
         assert "Purchase the" in prompt
+        assert "24-hour HH:MM" in prompt
+        assert "Never use" in prompt and "AM/PM" in prompt
 
 
 def test_dict_to_digest_accepts_undated_entries():

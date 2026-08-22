@@ -219,7 +219,8 @@ def structural_violations(digest, case):
     text = source_text(case)
     return (
         find_placeholder_dates(digest)
-        + find_structure_problems(digest, text)
+        + [problem for problem in find_structure_problems(digest, text)
+           if "tldr is empty" in problem]
     )
 
 
@@ -230,6 +231,8 @@ def advisory_warnings(digest, case):
         find_near_duplicates(digest)
         + find_missing_hint_dates(digest, text)
         + find_bring_repeated_in_actions(digest)
+        + [problem for problem in find_structure_problems(digest, text)
+           if "tldr is empty" not in problem]
     )
 
 

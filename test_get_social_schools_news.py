@@ -2240,7 +2240,8 @@ def test_find_structure_problems_still_caps_topics_on_a_normal_post():
         Topic(heading=f"Section {i}", actions=[], bring=[], notes=["a note"])
         for i in range(9)
     ])
-    problems = evaluate_digests.find_structure_problems(digest, "x" * 1000)
+    problems = evaluate_digests.advisory_warnings(
+        digest, {"body": "x" * 1000, "attachments": []})
     assert any("more than the message plausibly has" in p for p in problems)
 
 

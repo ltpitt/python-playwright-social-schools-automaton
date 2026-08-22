@@ -11,7 +11,7 @@ help:
 	@echo "  corpus      Update corpus with new posts and attachments"
 	@echo "  product     Generate product JSON from the local corpus"
 	@echo "  eval        Evaluate the product JSON (does not call the model)"
-	@echo "  eval-cycle  Run corpus -> product -> eval in order"
+	@echo "  eval-cycle  Pull, regenerate, evaluate, and send one live notification"
 	@echo "  unprocess-last  Forget the last processed article so 'make run' re-sends it"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
 	@echo "  clean    Remove Python cache directories"
@@ -49,10 +49,14 @@ product:
 eval:
 	python evaluate_digests.py
 
-# Complete evaluation cycle. Non-zero exit means the product has failures.
-eval-cycle: corpus
-	$(MAKE) product
+# Complete cycle. Evaluation failure stops the live notification step.
+eval-cycle:
+	git pull --ff-only
+	$(MAKE) corpus
+	$(MAKE) product FORCE=1
 	$(MAKE) eval
+	$(MAKE) unprocess-last
+	$(MAKE) run
 
 # Drop the most recently processed article so the next 'make run' re-scrapes,
 # re-generates and re-sends its real notification (for eyeballing prompt changes).

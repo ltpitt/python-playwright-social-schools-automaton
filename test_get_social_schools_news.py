@@ -735,7 +735,7 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "Purchase the" in prompt
         assert "24-hour HH:MM" in prompt
         assert "Never use" in prompt and "AM/PM" in prompt
-        assert "Combine closely related facts" in prompt
+        assert "at most ONE entry per real-world event" in prompt
 
 
 def test_dict_to_digest_accepts_undated_entries():

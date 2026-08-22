@@ -46,6 +46,7 @@ from get_social_schools_news import (  # noqa: E402
     _extract_action_hints,
     notify_admin,
     get_provider,
+    get_last_llm_usage,
     CopilotCliProvider,
     OpenAICompatibleProvider,
 )
@@ -1270,6 +1271,110 @@ def test_openai_compatible_raises_on_error_status():
     with patch('requests.post', return_value=mock_resp):
         with pytest.raises(RuntimeError, match="returned status 401"):
             provider.complete("p")
+
+
+def _ok_response(content="{}", usage=None):
+    resp = Mock()
+    resp.status_code = 200
+    body = {"choices": [{"message": {"content": content}}]}
+    if usage is not None:
+        body["usage"] = usage
+    resp.json.return_value = body
+    return resp
+
+
+def test_openai_compatible_asks_the_endpoint_to_enforce_the_schema():
+    """A server-enforced schema removes a whole class of JSON parse failures"""
+    provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m")
+    with patch('requests.post', return_value=_ok_response()) as mock_post:
+        provider.complete("p")
+    payload = json.loads(mock_post.call_args[1]["data"])
+    schema = payload["response_format"]["json_schema"]["schema"]
+    assert payload["response_format"]["type"] == "json_schema"
+    assert set(schema["required"]) == {"translated_title", "tldr", "topics"}
+
+
+def test_openai_compatible_retries_without_schema_when_rejected():
+    """Not every model implements json_schema; the run must degrade, not die"""
+    provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m")
+    rejected = Mock()
+    rejected.status_code = 400
+    rejected.text = "response_format not supported"
+    with patch('requests.post', side_effect=[rejected, _ok_response("ok")]) as mock_post:
+        assert provider.complete("p") == "ok"
+
+    assert mock_post.call_count == 2
+    assert "response_format" not in json.loads(mock_post.call_args[1]["data"])
+    assert provider.structured_output is False
+
+
+def test_openai_compatible_omits_structured_output_when_disabled():
+    provider = OpenAICompatibleProvider(
+        base_url="http://x/v1", model="m", structured_output=False)
+    with patch('requests.post', return_value=_ok_response()) as mock_post:
+        provider.complete("p")
+    assert "response_format" not in json.loads(mock_post.call_args[1]["data"])
+
+
+def test_openai_compatible_sends_reasoning_effort_only_when_configured():
+    """Non-reasoning models reject the option, so it must stay absent by default"""
+    with patch('requests.post', return_value=_ok_response()) as mock_post:
+        OpenAICompatibleProvider(base_url="http://x/v1", model="m").complete("p")
+    assert "reasoning" not in json.loads(mock_post.call_args[1]["data"])
+
+    with patch('requests.post', return_value=_ok_response()) as mock_post:
+        OpenAICompatibleProvider(
+            base_url="http://x/v1", model="m", reasoning_effort="High").complete("p")
+    assert json.loads(mock_post.call_args[1]["data"])["reasoning"] == {"effort": "high"}
+
+
+def test_openai_compatible_records_usage_for_cost_comparison():
+    """Choosing between models needs the bill, not just the quality score"""
+    provider = OpenAICompatibleProvider(
+        base_url="https://openrouter.ai/api/v1", model="m")
+    usage = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "cost": 0.0042}
+    with patch('requests.post', return_value=_ok_response(usage=usage)) as mock_post:
+        provider.complete("p")
+
+    assert json.loads(mock_post.call_args[1]["data"])["usage"] == {"include": True}
+    recorded = get_last_llm_usage()
+    assert recorded["cost_usd"] == 0.0042
+    assert recorded["total_tokens"] == 120
+    assert recorded["requests"] == 1
+    assert "latency_s" in recorded
+
+
+def test_openai_compatible_asks_for_cost_only_from_openrouter():
+    """Ollama and plain OpenAI endpoints can reject the cost-reporting flag"""
+    provider = OpenAICompatibleProvider(base_url="http://localhost:11434/v1", model="m")
+    with patch('requests.post', return_value=_ok_response()) as mock_post:
+        provider.complete("p")
+    assert "usage" not in json.loads(mock_post.call_args[1]["data"])
+
+
+def test_load_config_reads_reasoning_and_structured_output(tmp_path):
+    """The two knobs a bakeoff varies must be readable from config"""
+    with patch('os.path.exists', return_value=True):
+        mock_default_section = Mock()
+        mock_default_section.__getitem__ = Mock(side_effect=lambda key: {
+            'SCRAPED_WEBSITE_USER': 'user@example.com',
+            'SCRAPED_WEBSITE_PASSWORD': 'password123',
+        }[key])
+        mock_default_section.get = Mock(
+            side_effect=lambda key, default=None: {
+                'LLM_REASONING_EFFORT': 'Medium',
+                'LLM_STRUCTURED_OUTPUT': 'false',
+            }.get(key, default))
+
+        mock_parser = Mock()
+        mock_parser.__getitem__ = Mock(return_value=mock_default_section)
+
+        with patch('configparser.ConfigParser') as mock_config_parser:
+            mock_config_parser.return_value = mock_parser
+            result = load_config()
+
+    assert result.LLM_REASONING_EFFORT == 'medium'
+    assert result.LLM_STRUCTURED_OUTPUT is False
 
 
 def test_generate_digest_via_openai_compatible_provider():

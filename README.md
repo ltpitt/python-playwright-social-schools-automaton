@@ -32,6 +32,18 @@ When `DIGEST_ENABLED = true`, pick a backend with `LLM_PROVIDER`:
 
 The `openai_compatible` provider works with any OpenAI-compatible `/chat/completions` endpoint (Ollama, OpenRouter, LM Studio, and most cloud providers), so one setting covers local, self-hosted, and cloud. See `config.example.ini` for ready-to-copy examples. Whichever backend you choose, the model is used as a pure text transformer with no tool access (see `docs/adr/0004-pluggable-llm-providers.md`).
 
+### Is the cheap model good enough?
+
+Don't guess — measure. `make bakeoff MODELS='model-a model-b@medium'` replays the same local corpus through each candidate, scores every digest the same way, and prints quality against the money actually charged:
+
+```
+variant                             holdout     tune  recall  viol  warn  unstable      cost  sec/case
+google/gemini-2.5-flash               3/4      10/12     89%     1     6         0   $0.0121       2.4
+google/gemini-2.5-flash@medium        4/4      11/12     94%     0     4         0   $0.0298       5.1
+```
+
+A candidate is `model` or `model@reasoning_effort`, so raising the thinking budget on a cheap model competes head-to-head with buying a bigger one — usually the cheaper upgrade. Judge on the **holdout** column: those cases were held back from prompt tuning, so they are the ones that say whether a change generalises. `make bakeoff` costs real money (every case is regenerated for every candidate) and is never part of `make check`. Method and its limits: `docs/adr/0005-model-selection-by-bakeoff.md`.
+
 ## Notify multiple people
 
 Notifications are sent individually to each entry in `PUSHBULLET_API_KEYS`, a comma-separated list of `name:token` pairs — one per recipient, each using their own private Pushbullet access token:

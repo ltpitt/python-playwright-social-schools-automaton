@@ -1,4 +1,4 @@
-.PHONY: help install lint test check run loop clean corpus product eval eval-cycle unprocess-last
+.PHONY: help install lint test check run loop clean corpus product eval eval-cycle bakeoff unprocess-last
 
 help:
 	@echo "Usage: make <target>"
@@ -12,6 +12,7 @@ help:
 	@echo "  product     Generate product JSON from the local corpus"
 	@echo "  eval        Evaluate the product JSON (does not call the model)"
 	@echo "  eval-cycle  Pull, regenerate, send one live notification, then evaluate"
+	@echo "  bakeoff     Compare models on quality vs cost: make bakeoff MODELS='a b@high'"
 	@echo "  unprocess-last  Forget the last processed article so 'make run' re-sends it"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
 	@echo "  clean    Remove Python cache directories"
@@ -42,12 +43,21 @@ corpus:
 	python build_corpus.py
 
 # Run the real digest flow without sending notifications.
+# SAMPLES>1 regenerates each case to expose run-to-run instability.
 product:
-	python run_digest.py $(if $(FORCE),--force,)
+	python run_digest.py $(if $(FORCE),--force,) $(if $(MODEL),--model $(MODEL),) \
+		$(if $(REASONING),--reasoning $(REASONING),) $(if $(SAMPLES),--samples $(SAMPLES),)
 
 # Evaluate the exact product written by the product target.
+# Gates on every case; GATE=holdout gates only on the cases the prompt was not tuned against.
 eval:
-	python evaluate_digests.py
+	python evaluate_digests.py --summary eval_output/summary.json $(if $(GATE),--gate-on $(GATE),)
+
+# Is the cheap model good enough? Replay the corpus through each model and
+# compare quality against real money. Costs money: every case is regenerated.
+bakeoff:
+	@test -n "$(MODELS)" || { echo "Usage: make bakeoff MODELS='model-a model-b@medium'"; exit 2; }
+	python bakeoff.py $(MODELS) $(if $(SAMPLES),--samples $(SAMPLES),)
 
 # Complete cycle. Eval runs last so its table is the final output, ready to copy.
 # Neither leg short-circuits the other, but both failures still surface.

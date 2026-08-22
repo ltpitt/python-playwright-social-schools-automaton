@@ -184,6 +184,8 @@ digests/
 eval_output/
 processed_product_articles.json
 eval_results.json
+eval_summary.json
+bakeoff.json
 expectations*.json
 tests/fixtures/
 *.corpus.json

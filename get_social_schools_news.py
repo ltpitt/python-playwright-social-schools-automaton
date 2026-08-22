@@ -5,6 +5,7 @@ import re
 import shutil
 import smtplib
 import subprocess
+import time
 import pycurl
 import logging
 import traceback
@@ -105,6 +106,12 @@ class Config:
     LLM_MODEL: str = ""
     LLM_API_KEY: str = ""
     LLM_TIMEOUT: int = 120
+    # Extra thinking budget for models that support it ("low"/"medium"/"high").
+    # Empty means don't ask for any, which is what non-reasoning models need.
+    LLM_REASONING_EFFORT: str = ""
+    # Ask the endpoint to enforce the Digest JSON schema server-side. Falls back
+    # automatically when the endpoint rejects it, so it is safe to leave on.
+    LLM_STRUCTURED_OUTPUT: bool = True
 
 
 @dataclass
@@ -154,6 +161,9 @@ def load_config() -> Config:
         LLM_MODEL=config['DEFAULT'].get('LLM_MODEL', '').strip(),
         LLM_API_KEY=config['DEFAULT'].get('LLM_API_KEY', '').strip(),
         LLM_TIMEOUT=int(config['DEFAULT'].get('LLM_TIMEOUT', '120').strip() or '120'),
+        LLM_REASONING_EFFORT=config['DEFAULT'].get('LLM_REASONING_EFFORT', '').strip().lower(),
+        LLM_STRUCTURED_OUTPUT=config['DEFAULT'].get(
+            'LLM_STRUCTURED_OUTPUT', 'true').strip().lower() == 'true',
     )
 
 
@@ -250,6 +260,38 @@ DIGEST_PROMPT_TEMPLATE = (
 )
 
 REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "topics"}
+
+# The same contract as DIGEST_PROMPT_TEMPLATE's example, in a form an endpoint
+# can enforce. Prompt wording alone cannot stop a model emitting prose around
+# the JSON; a schema can, which removes a whole class of parse failures.
+_ENTRY_LIST_SCHEMA = {"type": "array", "items": {"type": "string"}}
+DIGEST_JSON_SCHEMA = {
+    "name": "digest",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["translated_title", "tldr", "topics"],
+        "properties": {
+            "translated_title": {"type": "string"},
+            "tldr": {"type": "string"},
+            "topics": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["heading", "actions", "bring", "notes"],
+                    "properties": {
+                        "heading": {"type": "string"},
+                        "actions": _ENTRY_LIST_SCHEMA,
+                        "bring": _ENTRY_LIST_SCHEMA,
+                        "notes": _ENTRY_LIST_SCHEMA,
+                    },
+                },
+            },
+        },
+    },
+}
 
 _DATE_HINT_RE = re.compile(
     r'\b\d{1,2}\s*(?:jan|feb|mrt|maart|apr|mei|jun(?:i)?|jul(?:i)?|aug|sep|okt|nov|dec)[a-z]*\.?',
@@ -678,6 +720,22 @@ class LLMProvider:
         raise NotImplementedError
 
 
+# What the last completion cost, in tokens/money/seconds. A module global rather
+# than a return value because get_provider() builds a fresh provider per call;
+# only the evaluation harness reads it, and only right after a generation.
+_LAST_USAGE = {}
+
+
+def get_last_llm_usage():
+    """Usage of the most recent completion. Empty when the backend reports none."""
+    return dict(_LAST_USAGE)
+
+
+def _record_usage(usage):
+    _LAST_USAGE.clear()
+    _LAST_USAGE.update(usage)
+
+
 class CopilotCliProvider(LLMProvider):
     """Default backend: the GitHub Copilot CLI in non-interactive, tool-free mode (ADR 0001/0002)."""
 
@@ -685,7 +743,28 @@ class CopilotCliProvider(LLMProvider):
         _check_copilot_available()
 
     def complete(self, prompt: str) -> str:
-        return _run_copilot(prompt)
+        started = time.monotonic()
+        text = _run_copilot(prompt)
+        # The CLI bills against a request quota and reports no token counts.
+        _record_usage({"latency_s": round(time.monotonic() - started, 2), "requests": 1})
+        return text
+
+
+# A 4xx from a chat endpoint most often means "I don't know this option" rather
+# than "your request is malformed", so an unsupported extra can be dropped and retried.
+_UNSUPPORTED_OPTION_STATUSES = (400, 404, 422)
+
+
+def _usage_from_response(data, latency_s):
+    """Token counts, and money when the endpoint reports it, for one completion."""
+    usage = data.get("usage") or {}
+    recorded = {"latency_s": round(latency_s, 2), "requests": 1}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        if isinstance(usage.get(key), int):
+            recorded[key] = usage[key]
+    if isinstance(usage.get("cost"), (int, float)):
+        recorded["cost_usd"] = float(usage["cost"])
+    return recorded
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -695,7 +774,8 @@ class OpenAICompatibleProvider(LLMProvider):
     and most cloud providers. No 'tools'/'functions' are ever sent (ADR 0002).
     """
 
-    def __init__(self, base_url, model, api_key="", timeout=120):
+    def __init__(self, base_url, model, api_key="", timeout=120,
+                 reasoning_effort="", structured_output=True):
         if not base_url:
             raise RuntimeError("LLM_BASE_URL is required for the 'openai_compatible' provider")
         if not model:
@@ -704,6 +784,11 @@ class OpenAICompatibleProvider(LLMProvider):
         self.model = model
         self.api_key = api_key
         self.timeout = timeout
+        self.reasoning_effort = (reasoning_effort or "").strip().lower()
+        self.structured_output = structured_output
+        # Only OpenRouter accepts (and answers) the cost-reporting flag; sending
+        # it to Ollama or a plain OpenAI endpoint risks a rejected request.
+        self.reports_cost = "openrouter.ai" in self.base_url
 
     def _headers(self):
         headers = {"Content-Type": "application/json"}
@@ -723,6 +808,17 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"LLM endpoint health check failed ({resp.status_code}) at {self.base_url}"
             )
 
+    def _post(self, payload):
+        try:
+            return requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                data=json.dumps(payload),
+                timeout=self.timeout,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(f"LLM request to {self.base_url} failed: {e}")
+
     def complete(self, prompt: str) -> str:
         # ADR 0002: deliberately no 'tools'/'functions' key — pure text transformer only.
         payload = {
@@ -732,23 +828,35 @@ class OpenAICompatibleProvider(LLMProvider):
             # Structured extraction, not creative writing: sample deterministically.
             "temperature": 0,
         }
-        try:
-            resp = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self._headers(),
-                data=json.dumps(payload),
-                timeout=self.timeout,
-            )
-        except requests.RequestException as e:
-            raise RuntimeError(f"LLM request to {self.base_url} failed: {e}")
+        if self.structured_output:
+            payload["response_format"] = {
+                "type": "json_schema", "json_schema": DIGEST_JSON_SCHEMA}
+        if self.reasoning_effort:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
+        if self.reports_cost:
+            payload["usage"] = {"include": True}
+
+        started = time.monotonic()
+        resp = self._post(payload)
+        if resp.status_code in _UNSUPPORTED_OPTION_STATUSES and "response_format" in payload:
+            # Not every model behind an OpenAI-compatible endpoint implements
+            # json_schema. Degrade to prompt-only JSON for the rest of this run.
+            logger.warning(
+                f"{self.model} rejected structured output ({resp.status_code}); "
+                "retrying without a response schema")
+            self.structured_output = False
+            payload.pop("response_format")
+            resp = self._post(payload)
         if resp.status_code != 200:
             logger.error(f"LLM endpoint error body:\n{resp.text}")
             raise RuntimeError(f"LLM endpoint returned status {resp.status_code}")
         try:
             data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
-        except (ValueError, KeyError, IndexError, TypeError) as e:
+            content = data["choices"][0]["message"]["content"].strip()
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
             raise RuntimeError(f"Unexpected LLM response shape: {e}")
+        _record_usage(_usage_from_response(data, time.monotonic() - started))
+        return content
 
 
 def get_provider() -> LLMProvider:
@@ -763,6 +871,8 @@ def get_provider() -> LLMProvider:
             model=cfg.LLM_MODEL,
             api_key=cfg.LLM_API_KEY,
             timeout=cfg.LLM_TIMEOUT,
+            reasoning_effort=cfg.LLM_REASONING_EFFORT,
+            structured_output=cfg.LLM_STRUCTURED_OUTPUT,
         )
     raise RuntimeError(
         f"Unknown LLM_PROVIDER {provider!r}; expected 'copilot' or 'openai_compatible'"

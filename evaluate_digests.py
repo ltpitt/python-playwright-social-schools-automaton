@@ -1,6 +1,6 @@
 """Score digests over a real corpus and gate on the result.
 
-Two tiers of check:
+Three tiers of check:
 
 * Structural — derived from the digest alone, so they need no ground truth and
   can live in this public repo. These encode the failure modes actually
@@ -8,11 +8,22 @@ Two tiers of check:
   near-identical action per item, dropped dates, headings invented for a
   three-line post.
 * Recall — "this digest must mention X", loaded from a local expectations file.
-  Those strings quote real posts, so the file is personal data and gitignored.
+* Faithfulness — "this digest must NOT say X", from the same file. Recall alone
+  rewards a model that says everything, including things the message never said;
+  a wrong time or an invented obligation is the costliest failure here.
+
+Expectation strings and the posts they quote are personal data, so that file is
+gitignored.
+
+Cases are split deterministically into a tuning set and a holdout set. The
+expectations were written by looking at failures, so a score over them is
+partly a score of one's own hindsight; only the holdout number says whether a
+change generalises.
 
 Run `run_digest.py` first. Sends no notifications.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -28,6 +39,10 @@ from get_social_schools_news import (
 DEFAULT_PRODUCT = "eval_output/product.json"
 DEFAULT_RESULTS = "eval_results.json"
 DEFAULT_EXPECTATIONS = "expectations.json"
+
+# One case in four is held out. Small corpus, so the holdout is small too — it is
+# a smoke test against overfitting, not a statistically comfortable sample.
+_HOLDOUT_EVERY = 4
 
 _PLACEHOLDER_RE = re.compile(
     r'\b(xx|tbd|n/?a|unknown date|date not specified|not specified|onbekend)\b',
@@ -262,41 +277,210 @@ def advisory_warnings(digest, case):
     )
 
 
+def split_for(case_id):
+    """Assign a case to 'tune' or 'holdout', stably and without a bookkeeping file."""
+    bucket = int(hashlib.sha256(case_id.encode("utf-8")).hexdigest()[:8], 16)
+    return "holdout" if bucket % _HOLDOUT_EVERY == 0 else "tune"
+
+
+def load_expectations(path):
+    """Read the local expectations file, accepting the plain-list legacy form.
+
+    A value may be a list of must-mention phrases, or an object also carrying
+    must_not_mention. A phrase may offer alternatives separated by '|', so an
+    acceptable paraphrase does not count as a miss.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as stream:
+        raw = json.load(stream)
+    expectations = {}
+    for case_id, value in raw.items():
+        if case_id.startswith("_"):
+            continue
+        if isinstance(value, list):
+            value = {"must_mention": value}
+        expectations[case_id] = {
+            "must_mention": list(value.get("must_mention", [])),
+            "must_not_mention": list(value.get("must_not_mention", [])),
+        }
+    return expectations
+
+
+def _normalise_for_match(text):
+    """Fold away differences that are formatting, not meaning."""
+    lowered = text.lower()
+    # '8:30' and '08:30' are the same time; the digest zero-pads, sources vary.
+    lowered = re.sub(r'(?<![\d:])(\d):(\d{2})', r'0\1:\2', lowered)
+    return " ".join(lowered.split())
+
+
+def phrase_present(phrase, text):
+    """Whether any '|'-separated alternative of this phrase appears in the text."""
+    haystack = _normalise_for_match(text)
+    return any(_normalise_for_match(alt) in haystack
+               for alt in phrase.split("|") if alt.strip())
+
+
 def score_recall(digest, expected):
-    """Fraction of must-mention strings present in the rendered notification."""
+    """Fraction of must-mention phrases present in the rendered notification."""
     if not expected:
         return 0, 0, []
-    rendered = render_digest_notification(digest).lower()
-    missing = [phrase for phrase in expected if phrase.lower() not in rendered]
+    rendered = render_digest_notification(digest)
+    missing = [phrase for phrase in expected if not phrase_present(phrase, rendered)]
     return len(expected) - len(missing), len(expected), missing
+
+
+def find_unfaithful_claims(digest, forbidden):
+    """Must-not-mention phrases the digest states anyway.
+
+    These are the expensive failures: a time the message never gave, an
+    obligation that was optional, a group that was not addressed.
+    """
+    if not forbidden:
+        return []
+    rendered = render_digest_notification(digest)
+    return [f"states what the message does not: {phrase!r}"
+            for phrase in forbidden if phrase_present(phrase, rendered)]
+
+
+def _score_one(digest, case, expected):
+    violations = structural_violations(digest, case)
+    violations += find_unfaithful_claims(digest, expected["must_not_mention"])
+    hits, total, missing = score_recall(digest, expected["must_mention"])
+    return violations, hits, total, missing
 
 
 def evaluate_product_case(record, expected):
     """Evaluate one already-generated product without calling the model."""
     case = record["source"]
+    expected = expected or {}
+    expected = {
+        "must_mention": list(expected.get("must_mention", []))
+        if isinstance(expected, dict) else list(expected),
+        "must_not_mention": list(expected.get("must_not_mention", []))
+        if isinstance(expected, dict) else [],
+    }
+    split = split_for(record["id"])
     if not record.get("product"):
         violations = record.get("violations") or ["product has no digest"]
         return {
             "id": record["id"],
+            "split": split,
             "violations": violations,
             "recall_hits": 0,
-            "recall_total": len(expected or []),
-            "recall_missing": list(expected or []),
+            "recall_total": len(expected["must_mention"]),
+            "recall_missing": list(expected["must_mention"]),
             "warnings": record.get("warnings", []),
+            "samples": 0,
+            "sample_scores": [],
+            "stable": True,
         }
 
     digest = _dict_to_digest(record["product"]["digest"])
-    violations = structural_violations(digest, case)
-    warnings = advisory_warnings(digest, case)
-    hits, total, missing = score_recall(digest, expected)
+    violations, hits, total, missing = _score_one(digest, case, expected)
+
+    # Extra samples exist only to separate a real difference from sampling luck.
+    sample_scores = []
+    for raw in record.get("samples") or []:
+        sample_violations, sample_hits, _, _ = _score_one(
+            _dict_to_digest(raw), case, expected)
+        sample_scores.append({"violations": len(sample_violations), "recall_hits": sample_hits})
+
     return {
         "id": record["id"],
+        "split": split,
         "violations": violations,
         "recall_hits": hits,
         "recall_total": total,
         "recall_missing": missing,
-        "warnings": warnings,
+        "warnings": advisory_warnings(digest, case),
+        "samples": len(sample_scores),
+        "sample_scores": sample_scores,
+        "stable": len({(s["violations"], s["recall_hits"]) for s in sample_scores}) <= 1,
     }
+
+
+def _split_summary(results, min_recall):
+    hits = sum(r["recall_hits"] for r in results)
+    total = sum(r["recall_total"] for r in results)
+    passed = sum(1 for r in results if case_passed(r, min_recall))
+    return {
+        "cases": len(results),
+        "passed": passed,
+        "pass_rate": round(passed / len(results), 3) if results else 0.0,
+        "recall_hits": hits,
+        "recall_total": total,
+        "recall": round(hits / total, 3) if total else None,
+        "violations": sum(len(r["violations"]) for r in results),
+        "warnings": sum(len(r["warnings"]) for r in results),
+        "unstable": sum(1 for r in results if not r["stable"]),
+    }
+
+
+def case_passed(result, min_recall):
+    recall_ok = (result["recall_total"] == 0
+                 or result["recall_hits"] / result["recall_total"] >= min_recall)
+    return not result["violations"] and recall_ok
+
+
+def build_summary(product, results, min_recall):
+    """Machine-readable scorecard: what this variant achieved and what it cost."""
+    by_split = {"tune": [], "holdout": []}
+    for result in results:
+        by_split[result["split"]].append(result)
+    return {
+        "variant": product.get("variant", {}),
+        "samples": product.get("samples", 1),
+        "usage": product.get("summary", {}).get("usage", {}),
+        "min_recall": min_recall,
+        "splits": {
+            "all": _split_summary(results, min_recall),
+            "tune": _split_summary(by_split["tune"], min_recall),
+            "holdout": _split_summary(by_split["holdout"], min_recall),
+        },
+    }
+
+
+def _case_detail(result):
+    items = result["violations"] + [f"missing {m!r}" for m in result["recall_missing"]]
+    if not result["stable"]:
+        items.append(f"unstable across {result['samples']} samples")
+    if result.get("warnings"):
+        items.append(f"warnings: {len(result['warnings'])}")
+    return "; ".join(items)
+
+
+def print_case_table(results, baseline, min_recall):
+    print(f"\n{'case':<24} {'split':<8} {'result':<6} {'viol':>4} {'recall':>8}  detail")
+    print("-" * 86)
+    for result in results:
+        ok = case_passed(result, min_recall)
+        recall = (f"{result['recall_hits']}/{result['recall_total']}"
+                  if result["recall_total"] else "-")
+        print(f"{result['id']:<24} {result['split']:<8} {'PASS' if ok else 'FAIL':<6} "
+              f"{len(result['violations']):>4} {recall:>8}  {_case_detail(result)[:200]}")
+
+        was = baseline.get(result["id"])
+        if was and len(result["violations"]) > len(was["violations"]):
+            print(f"{'':<24} REGRESSED: "
+                  f"{len(was['violations'])} -> {len(result['violations'])} violations")
+
+
+def print_summary(summary):
+    print()
+    for name in ("tune", "holdout", "all"):
+        block = summary["splits"][name]
+        if not block["cases"]:
+            continue
+        recall = f"{block['recall']:.0%}" if block["recall"] is not None else "n/a"
+        print(f"{name:<8} {block['passed']}/{block['cases']} passed, recall {recall}, "
+              f"{block['violations']} violation(s), {block['warnings']} warning(s)"
+              + (f", {block['unstable']} unstable" if block["unstable"] else ""))
+    usage = summary["usage"]
+    if usage.get("cost_usd") is not None:
+        print(f"cost     ${usage['cost_usd']:.4f} for {summary['splits']['all']['cases']} case(s) "
+              f"({usage.get('total_tokens', 0)} tokens)")
 
 
 def main():
@@ -305,8 +489,11 @@ def main():
     parser.add_argument("--expectations", default=DEFAULT_EXPECTATIONS,
                         help="local JSON of {case_id: [must-mention, ...]}")
     parser.add_argument("--results", default=DEFAULT_RESULTS)
+    parser.add_argument("--summary", help="write the machine-readable scorecard here")
     parser.add_argument("--baseline", help="previous results file to diff against")
     parser.add_argument("--min-recall", type=float, default=1.0)
+    parser.add_argument("--gate-on", choices=["all", "tune", "holdout"], default="all",
+                        help="which split decides the exit code")
     args = parser.parse_args()
 
     if not os.path.exists(args.product):
@@ -314,13 +501,9 @@ def main():
     with open(args.product, encoding="utf-8") as f:
         product = json.load(f)
 
-    expectations = {}
-    if args.expectations and os.path.exists(args.expectations):
-        with open(args.expectations, encoding="utf-8") as f:
-            expectations = json.load(f)
-
+    expectations = load_expectations(args.expectations)
     results = [
-        evaluate_product_case(case, expectations.get(case["id"], []))
+        evaluate_product_case(case, expectations.get(case["id"], {}))
         for case in product["cases"]
     ]
 
@@ -329,34 +512,22 @@ def main():
         with open(args.baseline, encoding="utf-8") as f:
             baseline = {r["id"]: r for r in json.load(f)}
 
-    failed = 0
-    print(f"\n{'case':<24} {'result':<6} {'viol':>4} {'recall':>8}  detail")
-    print("-" * 78)
-    for result in results:
-        recall_ok = (result["recall_total"] == 0
-                     or result["recall_hits"] / result["recall_total"] >= args.min_recall)
-        ok = not result["violations"] and recall_ok
-        failed += not ok
-        recall = (f"{result['recall_hits']}/{result['recall_total']}"
-                  if result["recall_total"] else "-")
-        detail_items = result["violations"] + [
-            f"missing {m!r}" for m in result["recall_missing"]]
-        if result.get("warnings"):
-            detail_items.append(f"warnings: {len(result['warnings'])}")
-        detail = "; ".join(detail_items)
-        print(f"{result['id']:<24} {'PASS' if ok else 'FAIL':<6} "
-              f"{len(result['violations']):>4} {recall:>8}  {detail[:200]}")
+    print_case_table(results, baseline, args.min_recall)
 
-        was = baseline.get(result["id"])
-        if was and len(result["violations"]) > len(was["violations"]):
-            print(f"{'':<24} REGRESSED: {len(was['violations'])} -> {len(result['violations'])} violations")
-
+    summary = build_summary(product, results, args.min_recall)
     with open(args.results, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
+    if args.summary:
+        os.makedirs(os.path.dirname(os.path.abspath(args.summary)), exist_ok=True)
+        with open(args.summary, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    print(f"\n{len(results) - failed}/{len(results)} passed. Results written to {args.results}")
+    print_summary(summary)
+    print(f"\nResults written to {args.results}"
+          + (f", scorecard to {args.summary}" if args.summary else ""))
     print("Results quote real posts: personal data. Never commit them.")
-    sys.exit(1 if failed else 0)
+    gate = summary["splits"][args.gate_on]
+    sys.exit(1 if gate["passed"] < gate["cases"] else 0)
 
 
 if __name__ == "__main__":

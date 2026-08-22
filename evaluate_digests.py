@@ -27,6 +27,7 @@ from get_social_schools_news import (
 
 DEFAULT_PRODUCT = "eval_output/product.json"
 DEFAULT_RESULTS = "eval_results.json"
+DEFAULT_EXPECTATIONS = "expectations.json"
 
 _PLACEHOLDER_RE = re.compile(
     r'\b(xx|tbd|n/?a|unknown date|date not specified|not specified|onbekend)\b',
@@ -276,7 +277,8 @@ def evaluate_product_case(record, expected):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--product", default=DEFAULT_PRODUCT)
-    parser.add_argument("--expectations", help="local JSON of {case_id: [must-mention, ...]}")
+    parser.add_argument("--expectations", default=DEFAULT_EXPECTATIONS,
+                        help="local JSON of {case_id: [must-mention, ...]}")
     parser.add_argument("--results", default=DEFAULT_RESULTS)
     parser.add_argument("--baseline", help="previous results file to diff against")
     parser.add_argument("--min-recall", type=float, default=1.0)
@@ -288,7 +290,7 @@ def main():
         product = json.load(f)
 
     expectations = {}
-    if args.expectations:
+    if args.expectations and os.path.exists(args.expectations):
         with open(args.expectations, encoding="utf-8") as f:
             expectations = json.load(f)
 

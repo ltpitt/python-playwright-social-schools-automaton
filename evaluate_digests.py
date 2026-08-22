@@ -240,6 +240,38 @@ _META_TLDR_RE = re.compile(
 )
 
 
+# The digest's own date convention is a zero-padded two-digit day, so '7 Sep'
+# sitting beside '01 Sep' in the same notification is just untidy.
+_UNPADDED_ENTRY_DATE_RE = re.compile(r'^\d\s+[A-Za-z]{3}\s*-\s')
+# A note that tells the reader to be somewhere or do something is an action in
+# the wrong list, which buries it: notes render as '·', below the '▸' actions.
+_ACTION_IN_NOTE_RE = re.compile(
+    r'\b(arrive|arrival|hand in|inform|ensure|contact|register|sign up|pay|'
+    r'drop off|pick up|wear|pack|bring)\b',
+    re.IGNORECASE,
+)
+
+
+def find_unpadded_date_prefixes(digest):
+    """Entries dated '7 Sep' where the convention, and their neighbours, use '07 Sep'."""
+    return [
+        f"date prefix is not zero-padded in {heading or '(untitled)'}/{field}: {entry!r}"
+        for heading, field, entries in _entry_lists(digest)
+        for entry in entries
+        if _UNPADDED_ENTRY_DATE_RE.match(entry)
+    ]
+
+
+def find_actions_hidden_in_notes(digest):
+    """Instructions filed as notes, where they render below the actions and get missed."""
+    return [
+        f"note reads like an action in {topic.heading or '(untitled)'}: {note!r}"
+        for topic in digest.topics
+        for note in topic.notes
+        if _ACTION_IN_NOTE_RE.search(note)
+    ]
+
+
 def find_meta_tldr(digest):
     """A tldr that talks about the message rather than saying what happens."""
     if _META_TLDR_RE.search(digest.tldr):
@@ -290,6 +322,8 @@ def advisory_warnings(digest, case):
         + find_missing_hint_dates(digest, text)
         + find_bring_repeated_in_actions(digest)
         + find_meta_tldr(digest)
+        + find_unpadded_date_prefixes(digest)
+        + find_actions_hidden_in_notes(digest)
         + [problem for problem in find_structure_problems(digest, text)
            if "tldr is empty" not in problem]
     )
@@ -338,6 +372,24 @@ def phrase_present(phrase, text):
     haystack = _normalise_for_match(text)
     return any(_normalise_for_match(alt) in haystack
                for alt in phrase.split("|") if alt.strip())
+
+
+def closest_line(phrase, digest):
+    """The digest line most like a phrase it failed to carry.
+
+    A miss is either an omission or an acceptable paraphrase, and the two want
+    opposite fixes: mend the prompt, or widen the expectation. Showing what the
+    digest said instead makes that call without opening the product file.
+    """
+    wanted = set(_tokens(phrase.replace("|", " ")))
+    if not wanted:
+        return ""
+    best, overlap = "", 0
+    for line in render_digest_notification(digest).splitlines():
+        shared = len(wanted & set(_tokens(line)))
+        if shared > overlap:
+            best, overlap = line.strip(), shared
+    return best
 
 
 def score_recall(digest, expected):
@@ -389,6 +441,7 @@ def evaluate_product_case(record, expected):
             "recall_hits": 0,
             "recall_total": len(expected["must_mention"]),
             "recall_missing": list(expected["must_mention"]),
+            "recall_near_misses": {},
             "warnings": record.get("warnings", []),
             "samples": 0,
             "sample_scores": [],
@@ -412,6 +465,7 @@ def evaluate_product_case(record, expected):
         "recall_hits": hits,
         "recall_total": total,
         "recall_missing": missing,
+        "recall_near_misses": {phrase: closest_line(phrase, digest) for phrase in missing},
         "warnings": advisory_warnings(digest, case),
         "samples": len(sample_scores),
         "sample_scores": sample_scores,
@@ -486,7 +540,11 @@ def build_summary(product, results, min_recall):
 
 
 def _case_detail(result):
-    items = result["violations"] + [f"missing {m!r}" for m in result["recall_missing"]]
+    near = result.get("recall_near_misses") or {}
+    items = list(result["violations"])
+    for phrase in result["recall_missing"]:
+        instead = near.get(phrase)
+        items.append(f"missing {phrase!r}" + (f" (digest says: {instead!r})" if instead else ""))
     if not result["stable"]:
         items.append(f"unstable across {result['samples']} samples")
     if result.get("warnings"):
@@ -502,7 +560,7 @@ def print_case_table(results, baseline, min_recall):
         recall = (f"{result['recall_hits']}/{result['recall_total']}"
                   if result["recall_total"] else "-")
         print(f"{result['id']:<24} {result['split']:<8} {'PASS' if ok else 'FAIL':<6} "
-              f"{len(result['violations']):>4} {recall:>8}  {_case_detail(result)[:200]}")
+              f"{len(result['violations']):>4} {recall:>8}  {_case_detail(result)[:320]}")
 
         was = baseline.get(result["id"])
         if was and len(result["violations"]) > len(was["violations"]):

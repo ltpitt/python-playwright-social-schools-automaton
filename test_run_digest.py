@@ -8,9 +8,12 @@ from build_corpus import update_corpus
 from bakeoff import format_verdict, parse_variant
 from evaluate_digests import (
     build_summary,
+    closest_line,
     evaluate_product_case,
+    find_actions_hidden_in_notes,
     find_meta_tldr,
     find_unfaithful_claims,
+    find_unpadded_date_prefixes,
     is_saturated,
     load_expectations,
     phrase_present,
@@ -358,3 +361,43 @@ def test_find_meta_tldr_flags_a_summary_about_the_message():
 
     assert find_meta_tldr(meta)
     assert find_meta_tldr(useful) == []
+
+
+def test_closest_line_shows_what_the_digest_said_instead():
+    """A miss is an omission or a paraphrase, and they want opposite fixes"""
+    digest = Digest("t", "Class allocation for next year is ready.",
+                    [Topic(heading="Holidays", actions=[], bring=[], notes=["Summer break"])])
+
+    assert "Class allocation" in closest_line("class division", digest)
+    assert closest_line("unrelated wording entirely", digest) == ""
+
+
+def test_evaluate_product_case_reports_the_nearest_line_for_a_miss():
+    result = evaluate_product_case(
+        PRODUCT_RECORD, {"must_mention": ["departure time"], "must_not_mention": []})
+
+    assert result["recall_missing"] == ["departure time"]
+    assert "recall_near_misses" in result
+
+
+def test_find_unpadded_date_prefixes_flags_a_single_digit_day():
+    """'7 Sep' beside '01 Sep' in one notification is the model ignoring the convention"""
+    digest = Digest("t", "s", [Topic(heading="Tests", actions=["01 Sep - trip"],
+                                     bring=[], notes=["7 Sep - topography test"])])
+
+    problems = find_unpadded_date_prefixes(digest)
+
+    assert len(problems) == 1
+    assert "7 Sep - topography test" in problems[0]
+
+
+def test_find_actions_hidden_in_notes_flags_an_instruction_filed_as_a_fact():
+    """An arrival time rendered as a note sits below the actions and gets missed"""
+    digest = Digest("t", "s", [Topic(
+        heading="Trip", actions=[], bring=[],
+        notes=["01 Sep - arrive at school by 08:20", "Children will get wet"])])
+
+    problems = find_actions_hidden_in_notes(digest)
+
+    assert len(problems) == 1
+    assert "arrive at school" in problems[0]

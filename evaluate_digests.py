@@ -259,8 +259,8 @@ def find_untranslated_items(digest, text):
 
     An item that survives verbatim into the digest was not translated, and the
     entire point of the digest is that a parent who cannot read the school's
-    language still knows what to pack. 'douchegel' is worse than a clumsy
-    translation, because it cannot be acted on at all.
+    language still knows what to pack. An untranslated item is worse than a
+    clumsy translation, because it cannot be acted on at all.
     """
     source = _normalise_for_match(text)
     problems = []

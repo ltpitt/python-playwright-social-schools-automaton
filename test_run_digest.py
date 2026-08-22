@@ -14,12 +14,14 @@ from evaluate_digests import (
     find_meta_tldr,
     find_unfaithful_claims,
     find_unpadded_date_prefixes,
+    find_untranslated_items,
     is_saturated,
     load_expectations,
     phrase_present,
     quality_score,
     score_recall,
     split_for,
+    structural_violations,
 )
 from run_digest import _case_fingerprint, apply_llm_overrides, run_case, run_corpus
 
@@ -401,3 +403,30 @@ def test_find_actions_hidden_in_notes_flags_an_instruction_filed_as_a_fact():
 
     assert len(problems) == 1
     assert "arrive at school" in problems[0]
+
+
+# Invented stand-in for a source in the school's own language.
+UNTRANSLATED_SOURCE = "Neem mee: een blauwe schrijfpen, een etui en een koptelefoon."
+
+
+def test_find_untranslated_items_flags_words_copied_from_the_source():
+    """A parent who cannot read the school's language cannot act on its words"""
+    digest = Digest("t", "s", [Topic(
+        heading="Supplies", actions=[], notes=[],
+        bring=["blauwe schrijfpen", "etui", "headphones"])])
+
+    problems = find_untranslated_items(digest, UNTRANSLATED_SOURCE)
+
+    assert len(problems) == 2
+    assert all("headphones" not in problem for problem in problems)
+
+
+def test_a_whole_untranslated_list_fails_but_one_loanword_only_warns():
+    """One item may legitimately share a spelling; a list of them cannot"""
+    case = {"id": "c", "title": "t", "body": UNTRANSLATED_SOURCE, "attachments": []}
+    one = Digest("t", "s", [Topic(heading="S", actions=[], notes=[], bring=["etui"])])
+    several = Digest("t", "s", [Topic(
+        heading="S", actions=[], notes=[], bring=["etui", "koptelefoon"])])
+
+    assert structural_violations(one, case) == []
+    assert len(structural_violations(several, case)) == 2

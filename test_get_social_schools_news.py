@@ -755,7 +755,8 @@ def test_generate_digest_prompt_demands_a_substantive_tldr(mock_config):
         assert "state the substance rather than describe the message" in prompt
         assert "This message provides important information" in prompt
         assert "zero-padded two-digit day" in prompt
-        assert "Never leave an arrival time" in prompt
+        assert "NEVER " in prompt and "copy the item's original wording through untranslated" in prompt
+        assert "ONE action entry carrying every time and instruction" in prompt
 
 
 def test_dict_to_digest_accepts_undated_entries():

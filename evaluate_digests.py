@@ -246,10 +246,33 @@ _UNPADDED_ENTRY_DATE_RE = re.compile(r'^\d\s+[A-Za-z]{3}\s*-\s')
 # A note that tells the reader to be somewhere or do something is an action in
 # the wrong list, which buries it: notes render as '·', below the '▸' actions.
 _ACTION_IN_NOTE_RE = re.compile(
-    r'\b(arrive|arrival|hand in|inform|ensure|contact|register|sign up|pay|'
+    r'\b(arrive|hand in|inform|ensure|contact|register|sign up|pay|'
     r'drop off|pick up|wear|pack|bring)\b',
     re.IGNORECASE,
 )
+# Shorter than this and a verbatim match means nothing: '12', 'A4', 'gym'.
+_MIN_TRANSLATED_WORD = 4
+
+
+def find_untranslated_items(digest, text):
+    """Bring items copied out of the source rather than translated.
+
+    An item that survives verbatim into the digest was not translated, and the
+    entire point of the digest is that a parent who cannot read the school's
+    language still knows what to pack. 'douchegel' is worse than a clumsy
+    translation, because it cannot be acted on at all.
+    """
+    source = _normalise_for_match(text)
+    problems = []
+    for topic in digest.topics:
+        for item in topic.bring:
+            words = [word for word in _tokens(item)
+                     if len(word) >= _MIN_TRANSLATED_WORD and not word.isdigit()]
+            if words and _normalise_for_match(item) in source:
+                problems.append(
+                    f"bring item looks untranslated in "
+                    f"{topic.heading or '(untitled)'}: {item!r}")
+    return problems
 
 
 def find_unpadded_date_prefixes(digest):
@@ -304,10 +327,17 @@ def source_text(case):
     )
 
 
+# One item could be a loanword spelled the same in both languages; a whole list
+# of them cannot be, so only a pattern of them proves translation was skipped.
+_UNTRANSLATED_VIOLATION_MIN = 2
+
+
 def structural_violations(digest, case):
     text = source_text(case)
+    untranslated = find_untranslated_items(digest, text)
     return (
         find_placeholder_dates(digest)
+        + (untranslated if len(untranslated) >= _UNTRANSLATED_VIOLATION_MIN else [])
         + [problem for problem in find_structure_problems(digest, text)
            if "tldr is empty" in problem]
     )
@@ -316,6 +346,7 @@ def structural_violations(digest, case):
 def advisory_warnings(digest, case):
     """Signals worth reviewing, but too context-dependent to fail the cycle."""
     text = source_text(case)
+    untranslated = find_untranslated_items(digest, text)
     return (
         find_near_duplicates(digest)
         + find_same_date_clusters(digest)
@@ -324,6 +355,7 @@ def advisory_warnings(digest, case):
         + find_meta_tldr(digest)
         + find_unpadded_date_prefixes(digest)
         + find_actions_hidden_in_notes(digest)
+        + (untranslated if len(untranslated) < _UNTRANSLATED_VIOLATION_MIN else [])
         + [problem for problem in find_structure_problems(digest, text)
            if "tldr is empty" not in problem]
     )

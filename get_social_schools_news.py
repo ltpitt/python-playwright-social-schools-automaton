@@ -228,7 +228,7 @@ DIGEST_PROMPT_TEMPLATE = (
     "- Use at most ONE entry per real-world event within a topic. Gather every fact about that "
     "event - arrival time, departure time, destination, return time and any related instruction "
     "- into that single entry. For example, a school trip becomes one entry like '01 Sep - Trip "
-    "to the polder: arrive 08:20, bus departs 08:30, returns around 14:30 (may be later)', never "
+    "to the museum: arrive 09:15, bus departs 09:30, returns around 15:00 (may be later)', never "
     "several lines each restating one time. Never put the same event's facts in both an action "
     "and a note.\n"
     "- Prefix an entry with 'DD Mon - ' ONLY when the message states a date for it, always with a "

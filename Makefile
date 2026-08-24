@@ -10,7 +10,7 @@ help:
 	@echo "  run      Run the main script (requires config.ini)"
 	@echo "  corpus      Update corpus with new posts and attachments"
 	@echo "  product     Generate product JSON from the local corpus"
-	@echo "  eval        Evaluate the product JSON (does not call the model)"
+	@echo "  eval        Evaluate the product JSON (judges phrases the matcher missed)"
 	@echo "  eval-cycle  Pull, regenerate, send one live notification, then evaluate"
 	@echo "  bakeoff     Compare models on quality vs cost: make bakeoff MODELS='a b@high'"
 	@echo "  unprocess-last  Forget the last processed article so 'make run' re-sends it"
@@ -51,8 +51,11 @@ product:
 
 # Evaluate the exact product written by the product target.
 # Gates on every case; GATE=holdout gates only on the cases the prompt was not tuned against.
+# A missed phrase gets a second opinion before it counts as missed; NOJUDGE=1 for
+# a fully offline, fully deterministic run.
 eval:
-	python evaluate_digests.py --summary eval_output/summary.json $(if $(GATE),--gate-on $(GATE),)
+	python evaluate_digests.py --summary eval_output/summary.json $(if $(GATE),--gate-on $(GATE),) \
+		$(if $(NOJUDGE),--no-judge,) $(if $(JUDGE_MODEL),--judge-model $(JUDGE_MODEL),)
 
 # Is the cheap model good enough? Replay the corpus through each model and
 # compare quality against real money. Costs money: every case is regenerated.

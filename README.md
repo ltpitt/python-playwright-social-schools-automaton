@@ -46,6 +46,14 @@ A candidate is `model` or `model@reasoning_effort`, so raising the thinking budg
 
 Once every case passes, pass/fail can no longer rank anything, so ranking falls to **score** — recall, minus 0.5 per violation and 0.05 per warning. A gap under 0.02 on a corpus this small is noise. `make bakeoff` costs real money (every case is regenerated for every candidate) and is never part of `make check`. Method and its limits: `docs/adr/0005-model-selection-by-bakeoff.md`.
 
+### Judging a phrase the matcher couldn't find
+
+Recall expectations are literal strings. That is right for `08:30` or `01 Sep`, which the model copies, and hopeless for a translated noun — a digest saying "raincoat" fails an expectation written "rain jacket", and "groups 3 and 4" fails one written "group 3".
+
+So a phrase that isn't found gets one appeal: a model is asked whether the digest conveys it in other words, and may overturn the miss. The rescue is printed in the case table so you can see every call it made.
+
+It's built so a bad judge can't hurt you. It only ever sees phrases that **already failed**, and a verdict can only turn a miss into a hit — so it can never fail a case that string matching passed. It isn't called at all when everything matches, verdicts are cached per `(model, digest, phrase)` so re-runs are free and repeatable, and any error means no rescues rather than a free pass. `make eval NOJUDGE=1` turns it off for a fully offline, deterministic run. Reasoning: `docs/adr/0007-a-missed-phrase-gets-one-appeal.md`.
+
 ### Let it fix its own prompt
 
 `make goal TURNS=5` runs the evaluator in a loop: regenerate the corpus, score it, hand the failing cases back to the model, take its rewritten prompt, measure again. It stops when every holdout case passes, when the turns run out, or when two turns in a row fail to beat the best result — and it restores the **best** turn, not the last one.

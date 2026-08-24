@@ -12,6 +12,12 @@ Three tiers of check:
   rewards a model that says everything, including things the message never said;
   a wrong time or an invented obligation is the costliest failure here.
 
+Recall is literal string matching, which is right for a date and hopeless for a
+translated noun. So a phrase that was not found gets one appeal: `judge.py` is
+asked whether the digest conveys it in other words, and may overturn the miss.
+It is never asked about a phrase that was found, and it can only ever rescue —
+never fail — a case. `--no-judge` keeps a run offline and fully deterministic.
+
 Expectation strings and the posts they quote are personal data, so that file is
 gitignored.
 
@@ -587,12 +593,35 @@ def build_summary(product, results, min_recall):
     }
 
 
+def apply_rescues(results, notifications, judge_fn):
+    """Let a second opinion overturn a miss the string matcher could not forgive.
+
+    Only misses are ever put to it, and a verdict can only turn a miss into a hit
+    — so a judge that is wrong, absent or offline can never fail a case that
+    deterministic matching passed.
+    """
+    for result in results:
+        if not result["recall_missing"]:
+            continue
+        verdict = judge_fn(notifications.get(result["id"], ""), list(result["recall_missing"]))
+        rescued = [phrase for phrase in result["recall_missing"] if verdict.get(phrase)]
+        if not rescued:
+            continue
+        result["recall_rescued"] = rescued
+        result["recall_hits"] += len(rescued)
+        result["recall_missing"] = [phrase for phrase in result["recall_missing"]
+                                    if phrase not in rescued]
+    return results
+
+
 def _case_detail(result):
     near = result.get("recall_near_misses") or {}
     items = list(result["violations"])
     for phrase in result["recall_missing"]:
         instead = near.get(phrase)
         items.append(f"missing {phrase!r}" + (f" (digest says: {instead!r})" if instead else ""))
+    for phrase in result.get("recall_rescued") or []:
+        items.append(f"judged present in other words: {phrase!r}")
     if not result["stable"]:
         items.append(f"unstable across {result['samples']} samples")
     if result.get("warnings"):
@@ -678,6 +707,10 @@ def main():
     parser.add_argument("--min-recall", type=float, default=1.0)
     parser.add_argument("--gate-on", choices=["all", "tune", "holdout"], default="all",
                         help="which split decides the exit code")
+    parser.add_argument("--no-judge", dest="judge", action="store_false", default=True,
+                        help="skip the second opinion on missed phrases (offline, fully deterministic)")
+    parser.add_argument("--judge-model",
+                        help="model that rules on a missed phrase (default: the configured one)")
     args = parser.parse_args()
 
     if not os.path.exists(args.product):
@@ -695,6 +728,17 @@ def main():
     if args.baseline and os.path.exists(args.baseline):
         with open(args.baseline, encoding="utf-8") as f:
             baseline = {r["id"]: r for r in json.load(f)}
+
+    if args.judge and any(result["recall_missing"] for result in results):
+        from judge import DEFAULT_CACHE, load_cache, save_cache, verdicts
+
+        cache = load_cache(DEFAULT_CACHE)
+        notifications = {case["id"]: (case.get("product") or {}).get("notification", "")
+                         for case in product["cases"]}
+        console.print("[muted]Asking a second opinion on the phrases that were not found…[/muted]")
+        apply_rescues(results, notifications,
+                      lambda text, phrases: verdicts(text, phrases, args.judge_model, cache))
+        save_cache(cache, DEFAULT_CACHE)
 
     print_case_table(results, baseline, args.min_recall)
 

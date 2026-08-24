@@ -396,14 +396,27 @@ def _normalise_for_match(text):
     lowered = text.lower()
     # '8:30' and '08:30' are the same time; the digest zero-pads, sources vary.
     lowered = re.sub(r'(?<![\d:])(\d):(\d{2})', r'0\1:\2', lowered)
+    # Same for a bare leading number: '1 Sep' and '01 Sep' are one date. Padding
+    # both sides is what stops '1 Jul' being found inside '21 Jul'.
+    lowered = re.sub(r'(?<![\d:.])(\d)(?=\s+[^\W\d_])', r'0\1', lowered)
     return " ".join(lowered.split())
+
+
+def _match_pattern(phrase):
+    """A number in an expectation must be that number, not the tail of a bigger one."""
+    normalised = _normalise_for_match(phrase)
+    if not normalised:
+        return None
+    before = r'(?<!\d)' if normalised[0].isdigit() else ''
+    after = r'(?!\d)' if normalised[-1].isdigit() else ''
+    return re.compile(before + re.escape(normalised) + after)
 
 
 def phrase_present(phrase, text):
     """Whether any '|'-separated alternative of this phrase appears in the text."""
     haystack = _normalise_for_match(text)
-    return any(_normalise_for_match(alt) in haystack
-               for alt in phrase.split("|") if alt.strip())
+    patterns = [_match_pattern(alt) for alt in phrase.split("|") if alt.strip()]
+    return any(pattern.search(haystack) for pattern in patterns if pattern)
 
 
 def closest_line(phrase, digest):

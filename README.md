@@ -46,6 +46,18 @@ A candidate is `model` or `model@reasoning_effort`, so raising the thinking budg
 
 Once every case passes, pass/fail can no longer rank anything, so ranking falls to **score** — recall, minus 0.5 per violation and 0.05 per warning. A gap under 0.02 on a corpus this small is noise. `make bakeoff` costs real money (every case is regenerated for every candidate) and is never part of `make check`. Method and its limits: `docs/adr/0005-model-selection-by-bakeoff.md`.
 
+### Let it fix its own prompt
+
+`make goal TURNS=5` runs the evaluator in a loop: regenerate the corpus, score it, hand the failing cases back to the model, take its rewritten prompt, measure again. It stops when every holdout case passes, when the turns run out, or when two turns in a row fail to beat the best result — and it restores the **best** turn, not the last one.
+
+```
+turn    tune    holdout score   cost_usd        sha     note
+0       14/16   3/4     0.910   0.0790          8240b36fd835
+1       15/16   4/4     0.945   0.0790          1c93aa07be41
+```
+
+The loop writes exactly one file — `digest_prompt.txt` — and it is plain text, not code. It cannot reach the scraper, the delivery path, or the expectations that judge it, so it cannot pass by moving the goalposts, and a prompt rewritten under the influence of a poisoned attachment still cannot execute. Nothing is committed: review the diff, or `git checkout digest_prompt.txt` to throw the run away. Reasoning: `docs/adr/0006-self-correcting-loop-writes-one-inert-file.md`.
+
 ## Notify multiple people
 
 Notifications are sent individually to each entry in `PUSHBULLET_API_KEYS`, a comma-separated list of `name:token` pairs — one per recipient, each using their own private Pushbullet access token:

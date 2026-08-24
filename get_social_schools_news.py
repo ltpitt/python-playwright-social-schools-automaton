@@ -22,6 +22,9 @@ from dataclasses import dataclass
 import configparser
 import tempfile
 
+# Re-exported: the loop in goal.py rewrites that module, so it must stay a lone string.
+from digest_prompt import DIGEST_PROMPT_TEMPLATE
+
 
 def resolve_browser_executable_path():
     env_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
@@ -193,81 +196,6 @@ PROCESSED_ARTICLES_FILE = "processed_articles.json"
 # Gmail SMTP over implicit TLS; we assume Gmail as the sending provider.
 EMAIL_SMTP_HOST = "smtp.gmail.com"
 EMAIL_SMTP_PORT = 465
-
-DIGEST_PROMPT_TEMPLATE = (
-    "You are writing a brief for a busy parent. Turn the Dutch school message "
-    "below into a structured JSON object.\n\n"
-    "Respond with ONLY a valid JSON object. No markdown fences, no explanation.\n\n"
-    "Required structure:\n"
-    "{{\n"
-    "  \"translated_title\": \"<article title in {language}>\",\n"
-    "  \"tldr\": \"<one sentence in {language} giving the substance: the soonest thing to do "
-    "or know, with its date>\",\n"
-    "  \"topics\": [\n"
-    "    {{\n"
-    "      \"heading\": \"<short subject of this part of the message, in {language}>\",\n"
-    "      \"actions\": [\"<something the parent must do or arrange>\"],\n"
-    "      \"bring\": [\"<one physical item the child must be given or take along>\"],\n"
-    "      \"notes\": [\"<something to be aware of that needs no action>\"]\n"
-    "    }}\n"
-    "  ]\n"
-    "}}\n\n"
-    "Rules:\n"
-    "- Group the message into topics mirroring how it is actually organised (its own headings or "
-    "paragraph subjects). Most messages have 1-3 topics; use a single topic when the message covers "
-    "only one subject. Never split one subject across several topics.\n"
-    "- bring: physical things to provide or pack, ONE item per entry, translated into {language} "
-    "and kept at the message's own level of detail ('12 coloured pencils', not 'pencils'). NEVER "
-    "copy the item's original wording through untranslated - a parent who cannot read the "
-    "school's language must still know what to pack. Never repeat the same item's full "
-    "description in actions. If the parent must buy or provide it, put the item in 'bring' and "
-    "make the action generic, e.g. 'Purchase the item for group 3'.\n"
-    "- actions: what the parent must actively do or arrange. notes: facts that need no action. "
-    "If the reader must be somewhere at a time, or must do or send something, it is an action "
-    "even when the message states it as a fact. When one event has both instructions and facts, "
-    "put the whole event in ONE action entry carrying every time and instruction, never an "
-    "action for one part of it and notes for the rest.\n"
-    "- actions, bring and notes are each an empty array [] when that topic has none.\n"
-    "- Use at most ONE entry per real-world event within a topic. Gather every fact about that "
-    "event - arrival time, departure time, destination, return time and any related instruction "
-    "- into that single entry. For example, a school trip becomes one entry like '01 Sep - Trip "
-    "to the museum: arrive 09:15, bus departs 09:30, returns around 15:00 (may be later)', never "
-    "several lines each restating one time. Never put the same event's facts in both an action "
-    "and a note.\n"
-    "- Prefix an entry with 'DD Mon - ' ONLY when the message states a date for it, always with a "
-    "zero-padded two-digit day: '07 Sep', never '7 Sep'. If there is no "
-    "date, write the entry without any date prefix. NEVER invent a date or use a placeholder like "
-    "'XX Sep' or 'date not specified'. If the source gives only a weekday, keep the entry "
-    "undated rather than writing '(date not specified)' anywhere.\n"
-    "- Order topics by urgency: soonest date first, undated topics last.\n"
-    "- Format every clock time as 24-hour HH:MM, zero-padded (e.g. '08:30', '14:30'). Never use "
-    "12-hour AM/PM \u2014 the notification's own post-date header is already 24-hour, and a mixed "
-    "message is harder to scan.\n"
-    "- Say which group or class an entry applies to whenever the message specifies one. When the "
-    "message singles out particular groups (e.g. asks 6B and 6C for something), name each of those "
-    "groups explicitly in the entry rather than generalising to 'some groups'.\n"
-    "- A request for parents to volunteer or help (e.g. accompanying a trip, driving, joining a "
-    "committee) is important even though it is optional. Keep it, and keep the number of people "
-    "asked for and any per-group detail, e.g. 'two parents per group needed to join the trip'.\n"
-    "- Every obligation in the message MUST appear somewhere, dated or not \u2014 use the pre-scan "
-    "hints below (if any) so you don't miss one, but never invent an item that isn't actually in "
-    "the message.\n"
-    "- Each entry must be specific enough to act on without opening the original message.\n"
-    "- If an entry is based on information found in an attachment rather than the "
-    "article body itself, append the source attachment's filename in parentheses at the end, e.g. "
-    "'DD Mon - what to do (see filename.pdf)'.\n"
-    "- tldr must never be empty, and must state the substance rather than describe the message. "
-    "A parent who reads only this line should already know the most important thing. Write "
-    "'School trip on 01 Sep: pack a raincoat and a packed lunch', never "
-    "'This message provides important information about the school trip and upcoming tests'.\n"
-    "- All text values in {language}.\n"
-    "- Output ONLY the JSON object, nothing else.\n\n"
-    "--- MESSAGE START ---\n"
-    "Title: {title}\n\n"
-    "{body}{attachments}\n"
-    "--- MESSAGE END ---"
-    "{hints}"
-)
 
 REQUIRED_DIGEST_FIELDS = {"translated_title", "tldr", "topics"}
 

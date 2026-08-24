@@ -1,4 +1,4 @@
-.PHONY: help install lint test check run loop clean corpus product eval eval-cycle bakeoff unprocess-last
+.PHONY: help install lint test check run loop goal clean corpus product eval eval-cycle bakeoff unprocess-last
 
 help:
 	@echo "Usage: make <target>"
@@ -15,6 +15,7 @@ help:
 	@echo "  bakeoff     Compare models on quality vs cost: make bakeoff MODELS='a b@high'"
 	@echo "  unprocess-last  Forget the last processed article so 'make run' re-sends it"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
+	@echo "  goal     Rewrite the prompt until the holdout gate passes: make goal TURNS=5"
 	@echo "  clean    Remove Python cache directories"
 
 # Install Python dependencies
@@ -85,6 +86,13 @@ unprocess-last:
 loop:
 	> loop_output.md
 	./loop.sh
+
+# Close the loop: rewrite digest_prompt.txt until the holdout gate passes or the
+# turns run out. Costs money (every turn regenerates every case) and commits
+# nothing. Never in 'make check'.
+goal:
+	python goal.py $(if $(TURNS),--turns $(TURNS),) $(if $(PATIENCE),--patience $(PATIENCE),) \
+		$(if $(IMPROVER_MODEL),--improver-model $(IMPROVER_MODEL),)
 
 # Remove Python cache artefacts (run_report.txt / full_prompt.txt / loop_output.md are kept for inspection)
 clean:

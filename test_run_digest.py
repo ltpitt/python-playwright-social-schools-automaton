@@ -242,6 +242,26 @@ def test_phrase_present_ignores_time_padding_and_accepts_alternatives():
     assert not phrase_present("towel|handdoek", "bring a hat")
 
 
+def test_phrase_present_ignores_day_padding():
+    """'1 Sep' and '01 Sep' are one date, whichever side wrote which."""
+    assert phrase_present("1 Sep", "01 Sep - swimming lesson")
+    assert phrase_present("01 Sep", "1 Sep - swimming lesson")
+
+
+def test_a_date_is_not_found_inside_a_bigger_date():
+    """The failure this check exists to catch: an invented day passing as the wanted one."""
+    assert not phrase_present("1 Jul", "21 Jul - sports day")
+    assert not phrase_present("3 Jul", "13 Jul - report cards")
+    assert not phrase_present("10 Mar", "110 Mar is not a date")
+    assert not phrase_present("12:15", "the bus leaves at 12:150")
+
+
+def test_a_word_expectation_still_matches_its_plural():
+    """Only numbers get boundary treatment; 'towel' must still find 'towels'."""
+    assert phrase_present("towel", "bring two towels")
+    assert phrase_present("group 6C", "group 6Ca")
+
+
 def test_score_recall_uses_normalised_matching():
     digest = Digest("t", "Swimming at 08:30", [])
     hits, total, missing = score_recall(digest, ["8:30", "swimming"])

@@ -189,3 +189,7 @@ bakeoff.json
 expectations*.json
 tests/fixtures/
 *.corpus.json
+
+# goal.py's working set: candidate prompts and the ledger, both shaped by real posts.
+goal_output/
+goal_ledger.tsv

@@ -3,22 +3,22 @@ You are writing a brief for a busy parent. Turn the Dutch school message below i
 Respond with ONLY a valid JSON object. No markdown fences, no explanation.
 
 Required structure:
-{{
-  "translated_title": "<article title in {language}>",
-  "tldr": "<one sentence in {language} giving the substance: the soonest thing to do or know, with its date>",
+{
+  "translated_title": "<article title in <<LANGUAGE>>>",
+  "tldr": "<one sentence in <<LANGUAGE>> giving the substance: the soonest thing to do or know, with its date>",
   "topics": [
-    {{
-      "heading": "<short subject of this part of the message, in {language}>",
+    {
+      "heading": "<short subject of this part of the message, in <<LANGUAGE>>>",
       "actions": ["<something the parent must do or arrange>"],
       "bring": ["<one physical item the child must be given or take along>"],
       "notes": ["<something to be aware of that needs no action>"]
-    }}
+    }
   ]
-}}
+}
 
 Rules:
 - Group the message into topics mirroring how it is actually organised (its own headings or paragraph subjects). Most messages have 1-3 topics; use a single topic when the message covers only one subject. Never split one subject across several topics.
-- bring: physical things to provide or pack, ONE item per entry, translated into {language} and kept at the message's own level of detail ('12 coloured pencils', not 'pencils'). NEVER copy the item's original wording through untranslated - a parent who cannot read the school's language must still know what to pack. Never repeat the same item's full description in actions. If the parent must buy or provide it, put the item in 'bring' and make the action generic, e.g. 'Purchase the item for group 3'.
+- bring: physical things to provide or pack, ONE item per entry, translated into <<LANGUAGE>> and kept at the message's own level of detail ('12 coloured pencils', not 'pencils'). NEVER copy the item's original wording through untranslated - a parent who cannot read the school's language must still know what to pack. Never repeat the same item's full description in actions. If the parent must buy or provide it, put the item in 'bring' and make the action generic, e.g. 'Purchase the item for group 3'.
 - actions: what the parent must actively do or arrange. notes: facts that need no action. If the reader must be somewhere at a time, or must do or send something, it is an action even when the message states it as a fact. When one event has both instructions and facts, put the whole event in ONE action entry carrying every time and instruction, never an action for one part of it and notes for the rest.
 - actions, bring and notes are each an empty array [] when that topic has none.
 - Use at most ONE entry per real-world event within a topic. Gather every fact about that event - arrival time, departure time, destination, return time and any related instruction - into that single entry. For example, a school trip becomes one entry like '01 Sep - Trip to the museum: arrive 09:15, bus departs 09:30, returns around 15:00 (may be later)', never several lines each restating one time. Never put the same event's facts in both an action and a note.
@@ -31,11 +31,11 @@ Rules:
 - Each entry must be specific enough to act on without opening the original message.
 - If an entry is based on information found in an attachment rather than the article body itself, append the source attachment's filename in parentheses at the end, e.g. 'DD Mon - what to do (see filename.pdf)'.
 - tldr must never be empty, and must state the substance rather than describe the message. A parent who reads only this line should already know the most important thing. Write 'School trip on 01 Sep: pack a raincoat and a packed lunch', never 'This message provides important information about the school trip and upcoming tests'.
-- All text values in {language}.
+- All text values in <<LANGUAGE>>.
 - Output ONLY the JSON object, nothing else.
 
 --- MESSAGE START ---
-Title: {title}
+Title: <<TITLE>>
 
-{body}{attachments}
---- MESSAGE END ---{hints}
+<<BODY>><<ATTACHMENTS>>
+--- MESSAGE END ---<<HINTS>>

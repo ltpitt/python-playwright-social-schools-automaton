@@ -39,7 +39,7 @@ import sys
 from rich.markup import escape
 
 from console import console, new_table
-from digest_prompt import PROMPT_PATH, PROMPT_PLACEHOLDERS, load_prompt_template
+from digest_prompt import PROMPT_PATH, PROMPT_PLACEHOLDERS, load_prompt_template, render_prompt
 from get_social_schools_news import get_config, get_provider
 
 PRODUCT = "eval_output/product.json"
@@ -49,7 +49,7 @@ ARCHIVE_DIR = "goal_output"
 LEDGER = "goal_ledger.tsv"
 
 # Rendering the candidate once with dummy values is the cheapest way to catch a
-# stray brace, and it costs a millisecond against a corpus regeneration.
+# mangled placeholder, and it costs a millisecond against a corpus regeneration.
 _SMOKE_VALUES = {
     "language": "en",
     "title": "Test Article",
@@ -71,9 +71,10 @@ one failed. Rewrite the template so those failures stop, without breaking the ca
 
 Hard requirements for your output:
 - Output ONLY the complete new template. No markdown fences, no commentary, no preamble.
-- Keep every placeholder exactly as-is: {language}, {title}, {body}, {attachments}, {hints}.
-- Keep the doubled braces {{ and }} in the JSON example. They are Python format escapes.
-- Keep the --- MESSAGE START --- / --- MESSAGE END --- delimiters and the trailing {hints}.
+- Keep every placeholder exactly as-is: <<LANGUAGE>>, <<TITLE>>, <<BODY>>, <<ATTACHMENTS>>, <<HINTS>>. \
+They are filled in later with the real message; never replace one with an actual value.
+- Invent no new <<PLACEHOLDER>> of your own.
+- Keep the --- MESSAGE START --- / --- MESSAGE END --- delimiters and the trailing <<HINTS>>.
 - Output the whole template, not a diff and not just the changed rules.
 
 How to think about it:
@@ -95,13 +96,13 @@ def validate_template(text):
     stripped = text.strip()
     if len(stripped) < _MIN_TEMPLATE_CHARS:
         return [f"only {len(stripped)} chars, expected at least {_MIN_TEMPLATE_CHARS} (truncated?)"]
-    missing = [name for name in PROMPT_PLACEHOLDERS if "{" + name + "}" not in text]
+    missing = [name for name in PROMPT_PLACEHOLDERS if f"<<{name}>>" not in text]
     if missing:
-        problems.append("dropped placeholder(s): " + ", ".join("{" + m + "}" for m in missing))
+        problems.append("dropped placeholder(s): " + ", ".join(f"<<{m}>>" for m in missing))
     try:
-        text.format(**_SMOKE_VALUES)
-    except (KeyError, IndexError, ValueError) as exc:
-        problems.append(f"does not render: {type(exc).__name__}: {exc}")
+        render_prompt(text, **_SMOKE_VALUES)
+    except ValueError as exc:
+        problems.append(str(exc))
     return problems
 
 
@@ -220,16 +221,38 @@ def build_improver_prompt(template, results, product):
     )
 
 
+def repair_prompt(candidate, problems):
+    """Ask once more, showing exactly what was wrong. Cheaper than losing the turn."""
+    return (
+        "Your previous answer could not be used as a prompt template:\n"
+        + "\n".join(f"- {problem}" for problem in problems)
+        + "\n\nOutput the corrected complete template and nothing else. Every one of "
+        + ", ".join(f"<<{name}>>" for name in PROMPT_PLACEHOLDERS)
+        + " must appear literally, spelled exactly that way, and no other <<PLACEHOLDER>> "
+        "may appear. Do not replace a placeholder with an example value.\n\n"
+        "--- YOUR PREVIOUS ANSWER START ---\n"
+        f"{candidate}\n"
+        "--- YOUR PREVIOUS ANSWER END ---"
+    )
+
+
 def propose_template(prompt, model=None):
-    """One tool-free completion (ADR 0002): text in, replacement template out."""
+    """One tool-free completion (ADR 0002): text in, replacement template out.
+
+    Structured output is forced off. The provider otherwise pins every answer to
+    the Digest JSON schema, which would make the model reply with a digest of
+    this prompt instead of a new template — observed, as a 174-character answer
+    rejected twice in a row.
+    """
     cfg = get_config()
-    previous = cfg.LLM_MODEL
+    previous_model, previous_structured = cfg.LLM_MODEL, cfg.LLM_STRUCTURED_OUTPUT
     if model:
         cfg.LLM_MODEL = model
+    cfg.LLM_STRUCTURED_OUTPUT = False
     try:
         return strip_fences(get_provider().complete(prompt))
     finally:
-        cfg.LLM_MODEL = previous
+        cfg.LLM_MODEL, cfg.LLM_STRUCTURED_OUTPUT = previous_model, previous_structured
 
 
 def _run(command, allow_failure=False):
@@ -241,10 +264,17 @@ def _run(command, allow_failure=False):
 
 
 def measure():
-    """Regenerate every case with the prompt on disk and score it. Sends nothing."""
-    _run(["make", "product", "FORCE=1"])
-    # A failing gate is the normal case here, and it is the summary we want, not the exit code.
-    _run(["make", "eval"], allow_failure=True)
+    """Regenerate every case with the prompt on disk and score it. Sends nothing.
+
+    Not forced: the case fingerprint already covers the prompt, so a rewrite
+    invalidates every case by itself and turn 0 gets to reuse what the last
+    product run paid for. Bump PRODUCT_GENERATOR_VERSION if the renderer changes,
+    or the baseline is measured against a stale notification.
+    """
+    # Called directly rather than through make: a failing gate is normal here, and
+    # make would decorate the expected non-zero exit with an alarming error banner.
+    _run([sys.executable, "run_digest.py"])
+    _run([sys.executable, "evaluate_digests.py", "--summary", SUMMARY], allow_failure=True)
     with open(SUMMARY, encoding="utf-8") as f:
         summary = json.load(f)
     with open(RESULTS, encoding="utf-8") as f:
@@ -254,8 +284,8 @@ def measure():
     return summary, results, product
 
 
-def archive(template, turn):
-    path = os.path.join(ARCHIVE_DIR, f"prompt_turn_{turn}.txt")
+def archive(template, turn, kind="prompt"):
+    path = os.path.join(ARCHIVE_DIR, f"{kind}_turn_{turn}.txt")
     with open(path, "w", encoding="utf-8") as f:
         f.write(template + "\n")
     return path
@@ -361,8 +391,14 @@ def main():
 
         problems = validate_template(candidate)
         if problems:
-            # Nothing is written and nothing is regenerated, but the turn is spent:
-            # a model that cannot produce a valid template will not on the next try either.
+            console.print(f"[warn]turn {turn} — malformed answer, asking once more[/warn]")
+            candidate = propose_template(repair_prompt(candidate, problems), args.improver_model)
+            problems = validate_template(candidate)
+
+        if problems:
+            # Nothing is written and nothing is regenerated, but the turn is spent.
+            # The answer is kept so the failure can be read rather than guessed at.
+            archive(candidate, turn, kind="rejected")
             record_turn(history, turn_record(turn, summary, template, history[-1]["path"],
                                              rejected="; ".join(problems)))
             continue

@@ -3,13 +3,14 @@ from unittest.mock import patch
 
 import pytest
 
-from digest_prompt import PROMPT_PLACEHOLDERS, load_prompt_template
+from digest_prompt import PROMPT_PLACEHOLDERS, load_prompt_template, render_prompt
 from goal import (
     best_turn,
     build_improver_prompt,
     failing_cases,
     format_ledger_row,
     rank,
+    repair_prompt,
     should_stop,
     stalled_turns,
     strip_fences,
@@ -36,23 +37,25 @@ class TestTemplateValidation:
         assert validate_template(load_prompt_template()) == []
 
     def test_shipped_template_renders_with_real_values(self):
-        rendered = load_prompt_template().format(
+        rendered = render_prompt(
+            load_prompt_template(),
             language="en", title="Test Article", body="Test body.", attachments="", hints="")
         assert "Test Article" in rendered
-        # The doubled braces must survive as a single brace, or the JSON example is broken.
+        assert "<<" not in rendered
+        # The JSON example is plain JSON now, with nothing left to escape.
         assert '{\n  "translated_title"' in rendered
 
     def test_rejects_a_dropped_placeholder(self):
-        template = load_prompt_template().replace("{hints}", "")
-        assert any("{hints}" in problem for problem in validate_template(template))
+        template = load_prompt_template().replace("<<HINTS>>", "")
+        assert any("<<HINTS>>" in problem for problem in validate_template(template))
 
-    def test_rejects_an_unescaped_brace(self):
-        template = load_prompt_template().replace("{{", "{", 1)
-        assert any("does not render" in problem for problem in validate_template(template))
+    def test_rejects_an_invented_placeholder(self):
+        template = load_prompt_template() + "\n<<SCHOOL_NAME>>"
+        assert any("<<SCHOOL_NAME>>" in problem for problem in validate_template(template))
 
-    def test_rejects_an_unknown_placeholder(self):
-        template = load_prompt_template() + "\n{school_name}"
-        assert any("does not render" in problem for problem in validate_template(template))
+    def test_a_literal_brace_is_no_longer_a_problem(self):
+        """The whole point of <<NAME>>: JSON braces need no escaping."""
+        assert validate_template(load_prompt_template() + '\n{"extra": [1]}') == []
 
     def test_rejects_a_truncated_answer(self):
         problems = validate_template("Sorry, I cannot help with that.")
@@ -60,7 +63,15 @@ class TestTemplateValidation:
 
     def test_placeholders_match_what_the_template_uses(self):
         template = load_prompt_template()
-        assert all("{" + name + "}" in template for name in PROMPT_PLACEHOLDERS)
+        assert all(f"<<{name}>>" in template for name in PROMPT_PLACEHOLDERS)
+
+
+class TestRepairPrompt:
+    def test_shows_the_problems_and_the_rejected_answer(self):
+        prompt = repair_prompt("a bad template", ["dropped placeholder(s): <<BODY>>"])
+        assert "dropped placeholder(s): <<BODY>>" in prompt
+        assert "a bad template" in prompt
+        assert "<<LANGUAGE>>" in prompt
 
 
 class TestStripFences:
@@ -210,11 +221,31 @@ class TestProposal:
         assert seen["model"] == "some/other-model"
         assert cfg.LLM_MODEL == before
 
+    def test_the_digest_schema_is_off_while_rewriting_the_prompt(self):
+        """With it on, the model answers with a Digest instead of a template."""
+        from goal import propose_template
+        import get_social_schools_news as app
+
+        cfg = app.get_config()
+        cfg.LLM_STRUCTURED_OUTPUT = True
+        seen = {}
+
+        class FakeProvider:
+            def complete(self, prompt):
+                seen["structured"] = app.get_config().LLM_STRUCTURED_OUTPUT
+                return "new template"
+
+        with patch("goal.get_provider", return_value=FakeProvider()):
+            propose_template("prompt")
+        assert seen["structured"] is False
+        assert cfg.LLM_STRUCTURED_OUTPUT is True
+
     def test_model_is_restored_even_when_the_call_fails(self):
         from goal import propose_template
         import get_social_schools_news as app
 
         cfg = app.get_config()
+        cfg.LLM_STRUCTURED_OUTPUT = True
         before = cfg.LLM_MODEL
 
         class BoomProvider:
@@ -225,6 +256,7 @@ class TestProposal:
             with pytest.raises(RuntimeError):
                 propose_template("prompt", model="some/other-model")
         assert cfg.LLM_MODEL == before
+        assert cfg.LLM_STRUCTURED_OUTPUT is True
 
 
 def _summary(holdout_passed, holdout_cases=2, score=0.5):
@@ -240,7 +272,7 @@ def _summary(holdout_passed, holdout_cases=2, score=0.5):
 
 def _valid_template(marker):
     return (f"{marker} " + "x" * 600
-            + "\n{{\n}}\n{language} {title} {body} {attachments}{hints}")
+            + "\n{}\n<<LANGUAGE>> <<TITLE>> <<BODY>><<ATTACHMENTS>><<HINTS>>")
 
 
 @pytest.fixture
@@ -286,10 +318,18 @@ class TestLoopWiring:
                      proposals=[_valid_template("BEST"), _valid_template("WORSE")], turns=2)
         assert "BEST" in final
 
-    def test_an_invalid_candidate_never_reaches_the_prompt_file(self, loop):
-        final = loop(scores=[0], proposals=["not a template", "still not a template"])
+    def test_an_invalid_candidate_never_reaches_the_prompt_file(self, loop, tmp_path):
+        # Each turn costs two proposals now: the answer, then the repair attempt.
+        final = loop(scores=[0], proposals=["not a template", "still not a template",
+                                            "nor this one", "nor this"])
         assert "BASELINE" in final
         assert "not a template" not in final
+        assert (tmp_path / "goal_output" / "rejected_turn_1.txt").exists()
+
+    def test_the_repair_retry_rescues_a_malformed_answer(self, loop):
+        final = loop(scores=[0, 2], proposals=["missing every placeholder",
+                                               _valid_template("REPAIRED")])
+        assert "REPAIRED" in final
 
     def test_the_ledger_records_every_turn(self, loop, tmp_path):
         loop(scores=[0, 1, 0],

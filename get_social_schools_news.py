@@ -25,7 +25,7 @@ from rich.logging import RichHandler
 
 from console import log_console
 # Re-exported: the loop in goal.py rewrites that module, so it must stay a lone string.
-from digest_prompt import DIGEST_PROMPT_TEMPLATE
+from digest_prompt import DIGEST_PROMPT_TEMPLATE, render_prompt
 
 
 def resolve_browser_executable_path():
@@ -1082,7 +1082,8 @@ def generate_digest(title, body, attachments, language=None):
             "listed here):\n" + "\n".join(f"- {h}" for h in hints)
         )
 
-    prompt = DIGEST_PROMPT_TEMPLATE.format(
+    prompt = render_prompt(
+        DIGEST_PROMPT_TEMPLATE,
         language=language,
         title=title,
         body=body,

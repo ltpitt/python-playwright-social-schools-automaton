@@ -21,7 +21,9 @@ from docx import Document
 from dataclasses import dataclass
 import configparser
 import tempfile
+from rich.logging import RichHandler
 
+from console import log_console
 # Re-exported: the loop in goal.py rewrites that module, so it must stay a lone string.
 from digest_prompt import DIGEST_PROMPT_TEMPLATE
 
@@ -181,13 +183,30 @@ def get_config() -> Config:
     return config
 
 
+# The log file always gets everything: it is the post-mortem, and loop.sh feeds
+# it to a model. Only the console is quietened, so turning the terminal down
+# never costs you evidence.
+_FILE_LOG_HANDLER = logging.FileHandler("run_report.txt", mode='w', encoding='utf-8')
+_FILE_LOG_HANDLER.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+_FILE_LOG_HANDLER.setLevel(logging.DEBUG)
+
+_CONSOLE_LOG_HANDLER = RichHandler(
+    console=log_console, show_path=False, show_time=False, markup=False,
+    rich_tracebacks=True, log_time_format="")
+_CONSOLE_LOG_HANDLER.setLevel(
+    os.environ.get("LOG_LEVEL", "INFO").strip().upper() or "INFO")
+
+
+def set_console_log_level(level):
+    """Change terminal verbosity. The log file is unaffected, by design."""
+    _CONSOLE_LOG_HANDLER.setLevel(level)
+
+
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for more detailed logging
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("run_report.txt", mode='w', encoding='utf-8'),
-        logging.StreamHandler()
-    ],
+    level=logging.DEBUG,
+    format="%(message)s",
+    handlers=[_FILE_LOG_HANDLER, _CONSOLE_LOG_HANDLER],
 )
 logger = logging.getLogger(__name__)
 
@@ -1455,7 +1474,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Process the first article even if already seen, without updating state",
     )
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Show debug detail on screen (run_report.txt always has it)",
+    )
+    verbosity.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Show warnings and errors only",
+    )
     args = parser.parse_args()
+    if args.verbose:
+        set_console_log_level("DEBUG")
+    elif args.quiet:
+        set_console_log_level("WARNING")
     FORCE_REPROCESS = args.force
     try:
         with sync_playwright() as playwright:

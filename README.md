@@ -193,6 +193,8 @@ Now, we can all sit back, relax, and let this script connect to the school websi
     python get_social_schools_news.py
     ```
 
+   Add `-v` for debug detail on screen, or `-q` for warnings and errors only. `LOG_LEVEL=DEBUG` does the same for cron and the `make` targets. Whatever you choose, `run_report.txt` always gets the full debug log — quietening the terminal never costs you evidence. Colour switches itself off when output is piped or `NO_COLOR` is set.
+
 ## Running it on a schedule
 
 The script checks for new content once per run, so schedule it (e.g. hourly) with cron. Since `config.ini` and `processed_articles.json` are read relative to the current directory, `cd` into the repo before invoking the venv's Python:

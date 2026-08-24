@@ -29,6 +29,9 @@ import os
 import re
 import sys
 
+from rich.markup import escape
+
+from console import console, new_table
 from get_social_schools_news import (
     _DUTCH_MONTHS,
     _dict_to_digest,
@@ -598,42 +601,70 @@ def _case_detail(result):
 
 
 def print_case_table(results, baseline, min_recall):
-    print(f"\n{'case':<24} {'split':<8} {'result':<6} {'viol':>4} {'recall':>8}  detail")
-    print("-" * 86)
+    table = new_table(
+        "case", "split", ("result", "center"), ("viol", "right"), ("recall", "right"), "detail",
+        title="Cases",
+    )
     for result in results:
         ok = case_passed(result, min_recall)
         recall = (f"{result['recall_hits']}/{result['recall_total']}"
                   if result["recall_total"] else "-")
-        print(f"{result['id']:<24} {result['split']:<8} {'PASS' if ok else 'FAIL':<6} "
-              f"{len(result['violations']):>4} {recall:>8}  {_case_detail(result)[:320]}")
-
         was = baseline.get(result["id"])
-        if was and len(result["violations"]) > len(was["violations"]):
-            print(f"{'':<24} REGRESSED: "
-                  f"{len(was['violations'])} -> {len(result['violations'])} violations")
+        regressed = was and len(result["violations"]) > len(was["violations"])
+        # Detail quotes scraped text, which may contain brackets rich would read as markup.
+        detail = escape(_case_detail(result)[:320])
+        if regressed:
+            detail = (f"[alarm]REGRESSED {len(was['violations'])} -> "
+                      f"{len(result['violations'])} violations[/alarm] {detail}")
+        table.add_row(
+            escape(result["id"]),
+            f"[muted]{result['split']}[/muted]",
+            "[ok]PASS[/ok]" if ok else "[bad]FAIL[/bad]",
+            str(len(result["violations"])) if not result["violations"]
+            else f"[bad]{len(result['violations'])}[/bad]",
+            recall,
+            detail,
+        )
+    console.print(table)
+
+
+def _split_row(name, block):
+    recall = f"{block['recall']:.0%}" if block["recall"] is not None else "n/a"
+    complete = block["passed"] == block["cases"]
+    return [
+        name if name != "holdout" else "[head]holdout[/head]",
+        f"{'[ok]' if complete else '[bad]'}{block['passed']}/{block['cases']}"
+        f"{'[/ok]' if complete else '[/bad]'}",
+        f"{block['score']:.2f}",
+        recall,
+        f"[bad]{block['violations']}[/bad]" if block["violations"] else "0",
+        f"[warn]{block['warnings']}[/warn]" if block["warnings"] else "0",
+        f"[warn]{block['unstable']}[/warn]" if block["unstable"] else "0",
+    ]
 
 
 def print_summary(summary):
-    print()
+    table = new_table("split", ("passed", "right"), ("score", "right"), ("recall", "right"),
+                      ("viol", "right"), ("warn", "right"), ("unstable", "right"),
+                      title="Summary")
     for name in ("tune", "holdout", "all"):
         block = summary["splits"][name]
-        if not block["cases"]:
-            continue
-        recall = f"{block['recall']:.0%}" if block["recall"] is not None else "n/a"
-        print(f"{name:<8} {block['passed']}/{block['cases']} passed, score {block['score']:.2f}, "
-              f"recall {recall}, {block['violations']} violation(s), "
-              f"{block['warnings']} warning(s)"
-              + (f", {block['unstable']} unstable" if block["unstable"] else ""))
+        if block["cases"]:
+            table.add_row(*_split_row(name, block))
+    console.print(table)
+
     usage = summary["usage"]
     if usage.get("cost_usd") is not None:
-        print(f"cost     ${usage['cost_usd']:.4f} for {summary['splits']['all']['cases']} case(s) "
-              f"({usage.get('total_tokens', 0)} tokens)")
+        console.print(f"[money]${usage['cost_usd']:.4f}[/money] for "
+                      f"{summary['splits']['all']['cases']} case(s) "
+                      f"[muted]({usage.get('total_tokens', 0)} tokens)[/muted]")
     if is_saturated(summary):
         overall = summary["splits"]["all"]
-        print(f"\nEvery case passes, so the gate can no longer tell two models apart. "
-              f"The remaining signal is the score ({overall['score']:.2f}) and the "
-              f"{overall['warnings']} warning(s). To make the gate discriminate again, add "
-              f"must_not_mention phrases and expectations for what is still being missed.")
+        console.print(
+            f"\n[warn]Every case passes, so the gate can no longer tell two models apart.[/warn] "
+            f"The remaining signal is the score ({overall['score']:.2f}) and the "
+            f"{overall['warnings']} warning(s). To make the gate discriminate again, add "
+            f"must_not_mention phrases and expectations for what is still being missed.")
 
 
 def main():
@@ -676,9 +707,9 @@ def main():
             json.dump(summary, f, indent=2, ensure_ascii=False)
 
     print_summary(summary)
-    print(f"\nResults written to {args.results}"
-          + (f", scorecard to {args.summary}" if args.summary else ""))
-    print("Results quote real posts: personal data. Never commit them.")
+    console.print(f"\n[muted]Results written to {args.results}"
+                  + (f", scorecard to {args.summary}" if args.summary else "") + "[/muted]")
+    console.print("[warn]Results quote real posts: personal data. Never commit them.[/warn]")
     gate = summary["splits"][args.gate_on]
     sys.exit(1 if gate["passed"] < gate["cases"] else 0)
 

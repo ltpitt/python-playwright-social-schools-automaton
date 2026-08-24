@@ -36,6 +36,9 @@ import shutil
 import subprocess
 import sys
 
+from rich.markup import escape
+
+from console import console, new_table
 from digest_prompt import PROMPT_PATH, PROMPT_PLACEHOLDERS, load_prompt_template
 from get_social_schools_news import get_config, get_provider
 
@@ -230,7 +233,7 @@ def propose_template(prompt, model=None):
 
 
 def _run(command, allow_failure=False):
-    print(f"[goal] $ {' '.join(command)}")
+    console.print(f"[muted]$ {' '.join(command)}[/muted]")
     code = subprocess.run(command).returncode
     if code and not allow_failure:
         sys.exit(f"[goal] {' '.join(command)} failed with code {code}")
@@ -258,31 +261,70 @@ def archive(template, turn):
     return path
 
 
-def announce(record):
-    print(f"[goal] turn {record['turn']}: "
-          f"holdout {record['holdout_passed']}/{record['holdout_cases']}, "
-          f"tune {record['tune_passed']}/{record['tune_cases']}, "
-          f"score {record['score']:.3f}"
-          + (f" — REJECTED, {record['rejected']}" if record["rejected"] else ""))
+def announce(record, improved):
+    """One line per turn, so a long run reads like progress rather than a wall."""
+    if record["rejected"]:
+        console.print(f"[warn]turn {record['turn']} rejected[/warn] "
+                      f"[muted]{escape(record['rejected'])}[/muted]")
+        return
+    style = "ok" if improved else "muted"
+    arrow = "improved" if improved else "no better"
+    console.print(
+        f"[{style}]turn {record['turn']}: "
+        f"holdout {record['holdout_passed']}/{record['holdout_cases']}, "
+        f"tune {record['tune_passed']}/{record['tune_cases']}, "
+        f"score {record['score']:.3f} — {arrow}[/{style}]")
+
+
+def record_turn(history, record):
+    """Commit a turn to the history, the ledger file and the screen, in that order."""
+    improved = not history or rank(record) > max(rank(earlier) for earlier in history)
+    history.append(record)
+    append_ledger(record)
+    announce(record, improved)
+
+
+def ledger_table(history):
+    table = new_table(("turn", "right"), ("tune", "right"), ("holdout", "right"),
+                      ("score", "right"), ("cost", "right"), "prompt", "note",
+                      title="Turns")
+    best = best_turn(history)
+    for record in history:
+        winner = record["turn"] == best["turn"]
+        style = "ok" if winner else "muted"
+        cost = "-" if record["cost_usd"] is None else f"${record['cost_usd']:.4f}"
+        note = escape(record["rejected"]) if record["rejected"] else ("kept" if winner else "")
+        table.add_row(
+            str(record["turn"]),
+            f"{record['tune_passed']}/{record['tune_cases']}",
+            f"[{style}]{record['holdout_passed']}/{record['holdout_cases']}[/{style}]",
+            f"{record['score']:.3f}",
+            cost,
+            f"[muted]{record['sha']}[/muted]",
+            f"[warn]{note}[/warn]" if record["rejected"] else f"[ok]{note}[/ok]",
+        )
+    return table
 
 
 def report(history, original, final):
-    print("\n" + "=" * 72)
-    print("[goal] ledger")
-    print("turn\ttune\tholdout\tscore\tcost_usd\tsha\tnote")
-    for record in history:
-        print(format_ledger_row(record))
-    print("=" * 72)
+    console.print()
+    console.print(ledger_table(history))
     if final == original:
-        print("[goal] The prompt is unchanged — no turn beat the baseline.")
+        console.print("[warn]The prompt is unchanged — no turn beat the baseline.[/warn]")
         return
     diff = difflib.unified_diff(
         original.splitlines(), final.splitlines(),
         "digest_prompt.txt (before)", "digest_prompt.txt (after)", lineterm="")
-    print("\n".join(diff))
-    print("\n[goal] digest_prompt.txt was rewritten. Nothing was committed — review it, and")
-    print("[goal] run 'git checkout digest_prompt.txt' to throw the change away.")
-    print("[goal] The ledger and goal_output/ quote real posts: personal data, never commit them.")
+    for line in diff:
+        if line.startswith("+") and not line.startswith("+++"):
+            console.print(f"[ok]{escape(line)}[/ok]")
+        elif line.startswith("-") and not line.startswith("---"):
+            console.print(f"[bad]{escape(line)}[/bad]")
+        else:
+            console.print(f"[muted]{escape(line)}[/muted]")
+    console.print("\n[head]digest_prompt.txt was rewritten.[/head] Nothing was committed — "
+                  "review it, or run [muted]git checkout digest_prompt.txt[/muted] to discard.")
+    console.print("[warn]The ledger and goal_output/ quote real posts: never commit them.[/warn]")
 
 
 def main():
@@ -299,20 +341,21 @@ def main():
     original = load_prompt_template()
     template = original
 
-    print("[goal] turn 0 — measuring the baseline")
+    console.print("[head]Goal:[/head] every holdout case passes, "
+                  f"within {args.turns} turn(s)")
+    console.print("[muted]turn 0 — measuring the baseline[/muted]")
     summary, results, product = measure()
-    history = [turn_record(0, summary, template, archive(template, 0))]
-    append_ledger(history[0])
-    announce(history[0])
+    history = []
+    record_turn(history, turn_record(0, summary, template, archive(template, 0)))
 
     while True:
         stop, reason = should_stop(history, args.turns, args.patience)
         if stop:
-            print(f"[goal] stopping — {reason}")
+            console.print(f"[head]Stopping[/head] — {reason}")
             break
 
         turn = len(history)
-        print(f"[goal] turn {turn} — asking for a better prompt")
+        console.print(f"[muted]turn {turn} — asking for a better prompt[/muted]")
         candidate = propose_template(
             build_improver_prompt(template, results, product), args.improver_model)
 
@@ -320,25 +363,20 @@ def main():
         if problems:
             # Nothing is written and nothing is regenerated, but the turn is spent:
             # a model that cannot produce a valid template will not on the next try either.
-            record = turn_record(turn, summary, template, history[-1]["path"],
-                                 rejected="; ".join(problems))
-            history.append(record)
-            append_ledger(record)
-            announce(record)
+            record_turn(history, turn_record(turn, summary, template, history[-1]["path"],
+                                             rejected="; ".join(problems)))
             continue
 
         with open(PROMPT_PATH, "w", encoding="utf-8") as f:
             f.write(candidate + "\n")
         template = candidate
         summary, results, product = measure()
-        record = turn_record(turn, summary, template, archive(template, turn))
-        history.append(record)
-        append_ledger(record)
-        announce(record)
+        record_turn(history, turn_record(turn, summary, template, archive(template, turn)))
 
     best = best_turn(history)
-    print(f"[goal] keeping turn {best['turn']} "
-          f"(holdout {best['holdout_passed']}/{best['holdout_cases']}, score {best['score']:.3f})")
+    console.print(f"[ok]Keeping turn {best['turn']}[/ok] "
+                  f"(holdout {best['holdout_passed']}/{best['holdout_cases']}, "
+                  f"score {best['score']:.3f})")
     shutil.copyfile(best["path"], PROMPT_PATH)
     report(history, original, load_prompt_template())
 

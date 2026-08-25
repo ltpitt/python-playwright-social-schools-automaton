@@ -228,15 +228,19 @@ def test_find_bring_repeated_in_actions():
     assert evaluate_digests.find_bring_repeated_in_actions(digest)
 
 
-def test_duplication_fails_the_gate_rather_than_only_warning():
-    """Both reach the parent as visible defects, so neither is advisory"""
+def test_duplication_fails_the_gate_but_a_misfiled_note_only_warns():
+    """A repeated packing item is always a defect; an imperative-sounding note is not.
+
+    Every 'note reads like an action' on the corpus turned out to describe what
+    the school does rather than ask anything of the parent.
+    """
     repeated = _digest([Topic(heading="Trip", actions=["Provide a towel for the trip"],
                               bring=["towel"], notes=[])])
-    misfiled = _digest([Topic(heading="Trip", actions=[], bring=[],
-                              notes=["Please bring a signed form"])])
+    reported = _digest([Topic(heading="Trip", actions=[], bring=[],
+                              notes=["The teacher will contact you before the trip"])])
 
     assert structural_violations(repeated, PLAIN_CASE)
-    assert structural_violations(misfiled, PLAIN_CASE)
+    assert structural_violations(reported, PLAIN_CASE) == []
     assert evaluate_digests.advisory_warnings(repeated, PLAIN_CASE) == []
 
 

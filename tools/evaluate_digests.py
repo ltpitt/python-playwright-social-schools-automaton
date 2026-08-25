@@ -392,11 +392,9 @@ def structural_violations(digest, case):
     untranslated = find_untranslated_items(digest, text)
     return (
         find_placeholder_dates(digest)
-        # Both are duplication rather than judgement calls: an item in 'bring'
-        # that is also an action reaches the parent twice, and an instruction
-        # filed as a note renders below the actions and gets missed.
+        # A packing item restated as an action reaches the parent twice, whatever
+        # the message was about, so this one needs no judgement of the content.
         + find_bring_repeated_in_actions(digest)
-        + find_actions_hidden_in_notes(digest)
         + find_notification_too_long(digest, case)
         + (untranslated if len(untranslated) >= _UNTRANSLATED_VIOLATION_MIN else [])
         + [problem for problem in find_structure_problems(digest, text)
@@ -412,6 +410,11 @@ def advisory_warnings(digest, case):
         find_near_duplicates(digest)
         + find_same_date_clusters(digest)
         + find_missing_hint_dates(digest, text, case)
+        # Advisory on purpose. It matches imperative-shaped English, which a
+        # note describing what the school does looks exactly like: "the teacher
+        # will contact you", "library parents ensure the collection is tidy".
+        # Every instance on the corpus was reported speech, not an obligation.
+        + find_actions_hidden_in_notes(digest)
         + find_meta_tldr(digest)
         + find_unpadded_date_prefixes(digest)
         + (untranslated if len(untranslated) < _UNTRANSLATED_VIOLATION_MIN else [])

@@ -1,10 +1,18 @@
 import json
+import os
 from unittest.mock import patch
 
 import pytest
 
 from socialschools.models import Digest, Topic
-from tools.run_digest import _case_fingerprint, apply_llm_overrides, run_case, run_corpus
+from tools.run_digest import (
+    _case_fingerprint,
+    apply_llm_overrides,
+    archive_product,
+    run_case,
+    run_corpus,
+    variant_slug,
+)
 
 CASE = {
     "id": "test-article",
@@ -18,6 +26,46 @@ CASE = {
         "text": "Bring a hat.",
     }],
 }
+
+
+def _result(stamp="2026-08-25T13:00:00.000+00:00", sha="abc12345", model="test/model"):
+    return {
+        "generated_at": stamp,
+        "prompt_sha": sha,
+        "variant": {"model": model, "reasoning_effort": ""},
+        "cases": [],
+    }
+
+
+def test_variant_slug_is_filename_safe_and_carries_the_effort():
+    assert variant_slug({"model": "google/gemini-2.5-flash"}) == "google-gemini-2.5-flash"
+    assert variant_slug(
+        {"model": "openai/gpt-5.6-luna", "reasoning_effort": "low"}) == "openai-gpt-5.6-luna@low"
+
+
+def test_archive_product_names_the_copy_by_prompt_and_model(tmp_path):
+    path = archive_product(_result(), directory=str(tmp_path))
+    name = os.path.basename(path)
+    assert "abc12345" in name and "test-model" in name
+    assert json.load(open(path))["prompt_sha"] == "abc12345"
+
+
+def test_archive_product_keeps_only_the_most_recent(tmp_path):
+    for hour in range(5):
+        archive_product(_result(stamp=f"2026-08-25T1{hour}:00:00.000+00:00"),
+                        directory=str(tmp_path), keep=3)
+
+    kept = sorted(os.listdir(tmp_path))
+    assert len(kept) == 3
+    # The oldest two are the ones gone, so the surviving window is the newest.
+    assert kept[0].startswith("20260825T12")
+
+
+def test_archive_product_can_keep_everything(tmp_path):
+    for hour in range(3):
+        archive_product(_result(stamp=f"2026-08-25T1{hour}:00:00.000+00:00"),
+                        directory=str(tmp_path), keep=0)
+    assert len(os.listdir(tmp_path)) == 3
 
 
 def test_run_case_keeps_source_and_product():

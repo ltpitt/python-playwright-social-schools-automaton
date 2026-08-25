@@ -1,5 +1,5 @@
 .PHONY: help install install-dev lint test check run health events clean \
-        corpus product eval eval-cycle bakeoff goal unprocess-last
+        corpus product eval eval-cycle bakeoff goal unprocess-last diff
 
 PYTHON ?= python
 
@@ -16,6 +16,7 @@ help:
 	@echo "  corpus          Update the local corpus with new posts and attachments"
 	@echo "  product         Generate the product JSON from the local corpus"
 	@echo "  eval            Evaluate the product (judges phrases the matcher missed)"
+	@echo "  diff            What changed in the notifications since the run before"
 	@echo "  eval-cycle      Pull, regenerate, send one live notification, then evaluate"
 	@echo "  bakeoff         Compare models on quality vs cost: make bakeoff MODELS='a b@high'"
 	@echo "  goal            Rewrite the prompt until the holdout gate passes: make goal TURNS=5"
@@ -70,6 +71,11 @@ eval:
 bakeoff:
 	@test -n "$(MODELS)" || { echo "Usage: make bakeoff MODELS='model-a model-b@medium'"; exit 2; }
 	$(PYTHON) -m tools.bakeoff $(MODELS) $(if $(SAMPLES),--samples $(SAMPLES),)
+
+# Which sentence moved? A score tells you something changed and never what.
+# CASE=post_123 shows the full before/after for one case.
+diff:
+	$(PYTHON) -m tools.diff_products $(if $(CASE),--case $(CASE),) $(if $(LIST),--list,)
 
 # Close the loop: rewrite the digest prompt until the holdout gate passes or the
 # turns run out. Costs money (every turn regenerates every case) and commits

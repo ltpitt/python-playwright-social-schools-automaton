@@ -11,6 +11,7 @@ models never silently reuses another model's cached answers.
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
+import glob
 import hashlib
 import json
 import os
@@ -20,10 +21,12 @@ from socialschools.config import get_config
 from socialschools.digest.generate import generate_digest
 from socialschools.digest.prompt import DIGEST_PROMPT_TEMPLATE
 from socialschools.digest.render import render_digest_notification
+from socialschools.events import sha8
 from socialschools.llm.base import get_last_llm_usage
 from socialschools.models import Attachment
 from socialschools.paths import (
     CORPUS_FILE,
+    HISTORY_DIR,
     PRODUCT_FILE,
     PROCESSED_CORPUS_ARTICLES_FILE,
     PROCESSED_PRODUCT_ARTICLES_FILE,
@@ -34,6 +37,9 @@ DEFAULT_OUTPUT = PRODUCT_FILE
 DEFAULT_PROCESSED = PROCESSED_CORPUS_ARTICLES_FILE
 DEFAULT_PRODUCT_STATE = PROCESSED_PRODUCT_ARTICLES_FILE
 PRODUCT_GENERATOR_VERSION = 3
+
+# Roughly 400KB per run, so thirty runs is a few days of experimenting for 12MB.
+HISTORY_KEEP = 30
 
 
 def apply_llm_overrides(model=None, reasoning=None, structured=None):
@@ -57,6 +63,33 @@ def current_variant():
         "reasoning_effort": cfg.LLM_REASONING_EFFORT,
         "structured_output": cfg.LLM_STRUCTURED_OUTPUT,
     }
+
+
+def variant_slug(variant):
+    """A filename-safe handle for a model, so one run cannot overwrite another's."""
+    model = (variant.get("model") or "default").replace("/", "-").replace(":", "-")
+    effort = variant.get("reasoning_effort")
+    return f"{model}@{effort}" if effort else model
+
+
+def archive_product(result, directory=None, keep=HISTORY_KEEP):
+    """Keep a dated copy of this product, and prune the oldest beyond `keep`.
+
+    product.json is overwritten every run, so without this a score that moved
+    could never be traced back to the sentence that moved it.
+    """
+    directory = directory or HISTORY_DIR
+    os.makedirs(directory, exist_ok=True)
+    stamp = result["generated_at"].replace(":", "").replace("-", "")[:15]
+    name = f"{stamp}-{result.get('prompt_sha')}-{variant_slug(result['variant'])}.json"
+    path = os.path.join(directory, name)
+    with open(path, "w", encoding="utf-8") as stream:
+        json.dump(result, stream, indent=2, ensure_ascii=False)
+
+    archived = sorted(glob.glob(os.path.join(directory, "*.json")))
+    for stale in archived[:-keep] if keep else []:
+        os.remove(stale)
+    return path
 
 
 def _attachments(case):
@@ -186,6 +219,7 @@ def run_corpus(corpus_path, output_path, state_path=DEFAULT_PRODUCT_STATE, force
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "corpus": corpus_path,
         "variant": current_variant(),
+        "prompt_sha": sha8(DIGEST_PROMPT_TEMPLATE),
         "samples": samples,
         "cases": cases,
         "summary": {
@@ -201,6 +235,7 @@ def run_corpus(corpus_path, output_path, state_path=DEFAULT_PRODUCT_STATE, force
     os.makedirs(parent, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2, ensure_ascii=False)
+    archive_product(result)
     state_parent = os.path.dirname(os.path.abspath(state_path))
     os.makedirs(state_parent, exist_ok=True)
     with open(state_path, "w", encoding="utf-8") as stream:

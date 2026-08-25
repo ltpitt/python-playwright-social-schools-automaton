@@ -47,6 +47,11 @@ EVAL_SUMMARY_FILE = os.path.join(EVAL_DIR, "summary.json")
 JUDGE_CACHE_FILE = os.path.join(EVAL_DIR, "judge_cache.json")
 BAKEOFF_FILE = os.path.join(EVAL_DIR, "bakeoff.json")
 
+# Every product ever generated, newest last. product.json is overwritten on each
+# run, so without this a score that moved could never be traced back to the
+# sentence that moved it — the same reason events.jsonl keeps raw lines.
+HISTORY_DIR = os.path.join(EVAL_DIR, "history")
+
 GOAL_LEDGER_FILE = os.path.join(GOAL_DIR, "ledger.tsv")
 
 

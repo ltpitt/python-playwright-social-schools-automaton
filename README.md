@@ -54,6 +54,30 @@ So a phrase that isn't found gets one appeal: a model is asked whether the diges
 
 It's built so a bad judge can't hurt you. It only ever sees phrases that **already failed**, and a verdict can only turn a miss into a hit — so it can never fail a case that string matching passed. It isn't called at all when everything matches, verdicts are cached per `(model, digest, phrase)` so re-runs are free and repeatable, and any error means no rescues rather than a free pass. `make eval NOJUDGE=1` turns it off for a fully offline, deterministic run. Reasoning: `docs/adr/0007-a-missed-phrase-gets-one-appeal.md`.
 
+### Knowing when it quietly got worse
+
+Every run and every article writes one wide structured line to `events.jsonl` — what code was running, what model, how the digest came out, what it cost, whether it worked:
+
+```json
+{"event":"article","run_id":"a1b2c3d4","ts":"2026-08-25T07:14:09Z","outcome":"ok",
+ "article_id":"post_123","body_chars":1840,"attachments":1,"attachments_failed":0,
+ "topics":2,"actions":3,"bring":4,"tldr_chars":88,"notification_chars":612,
+ "has_post_date":true,"has_footer":true,"llm_cost_usd":0.0041,"duration_ms":4820}
+```
+
+`make health` reads those back and compares the latest run against the ones before it:
+
+```
+ severity     what         detail
+ ──────────────────────────────────────────────────────────────────────────
+ regression   has_footer   true in 100% of 10 earlier article(s), false in 1/1 now
+ info         prompt_sha   8240b36f -> c44474ab
+```
+
+It reports what got worse *and* what changed about the run — commit, model, prompt hash, uncommitted changes — because the second column is usually the reason for the first. It runs as part of `make eval-cycle`, costs nothing, and calls no model.
+
+This exists because a deterministic line of the notification template stopped appearing and nothing could say when. Events record the **shape** of what was produced — counts, lengths, flags — never the text, so they can be kept for months without becoming a store of personal data. The text stays in the rotated debug log, joined by `run_id`. Reasoning: `docs/adr/0008-one-wide-event-per-unit-of-work.md`.
+
 ### Let it fix its own prompt
 
 `make goal TURNS=5` runs the evaluator in a loop: regenerate the corpus, score it, hand the failing cases back to the model, take its rewritten prompt, measure again. It stops when every holdout case passes, when the turns run out, or when two turns in a row fail to beat the best result — and it restores the **best** turn, not the last one.

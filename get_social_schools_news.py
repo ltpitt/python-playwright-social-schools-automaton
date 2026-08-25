@@ -21,9 +21,11 @@ from docx import Document
 from dataclasses import dataclass
 import configparser
 import tempfile
+from logging.handlers import RotatingFileHandler
 from rich.logging import RichHandler
 
 from console import log_console
+from events import RUN_ID, Event, environment, sha8
 # Re-exported: the loop in goal.py rewrites that module, so it must stay a lone string.
 from digest_prompt import DIGEST_PROMPT_TEMPLATE, render_prompt
 
@@ -183,12 +185,16 @@ def get_config() -> Config:
     return config
 
 
-# The log file always gets everything: it is the post-mortem, and loop.sh feeds
-# it to a model. Only the console is quietened, so turning the terminal down
-# never costs you evidence.
-_FILE_LOG_HANDLER = logging.FileHandler("run_report.txt", mode='w', encoding='utf-8')
+# The log file always gets everything: it is the narration behind the canonical
+# events, and loop.sh feeds it to a model. Only the console is quietened, so
+# turning the terminal down never costs you evidence.
+#
+# Rotating rather than truncating, because the run you want to explain is
+# usually the one before this one — and every subprocess used to wipe it.
+_FILE_LOG_HANDLER = RotatingFileHandler(
+    "run_report.txt", maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8')
 _FILE_LOG_HANDLER.setFormatter(
-    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logging.Formatter("%(asctime)s " + RUN_ID + " %(levelname)s %(name)s %(message)s"))
 _FILE_LOG_HANDLER.setLevel(logging.DEBUG)
 
 _CONSOLE_LOG_HANDLER = RichHandler(
@@ -691,6 +697,17 @@ def get_last_llm_usage():
 def _record_usage(usage):
     _LAST_USAGE.clear()
     _LAST_USAGE.update(usage)
+    # Cost and latency belong to the unit of work that caused them, so they can
+    # be compared across runs rather than only read once, live.
+    for event in (CURRENT_ARTICLE_EVENT, CURRENT_RUN_EVENT):
+        if event is None:
+            continue
+        event.add("llm_calls")
+        for field, key in (("llm_tokens", "total_tokens"), ("llm_cost_usd", "cost_usd"),
+                           ("llm_ms", "latency_s")):
+            value = usage.get(key)
+            if isinstance(value, (int, float)):
+                event.add(field, round(value * 1000, 1) if key == "latency_s" else value)
 
 
 class CopilotCliProvider(LLMProvider):
@@ -1176,7 +1193,50 @@ def process_docx_links(playwright, browser, context, docx_links):
     return attachments
 
 
+# The run's canonical event, set by run() so nested work can add its counters to
+# it without every function having to be handed one.
+CURRENT_RUN_EVENT = None
+CURRENT_ARTICLE_EVENT = None
+
+
+def _tally(event, key, amount=1):
+    """Count something onto an event that may not exist, without branching at the call site."""
+    if event is not None:
+        event.add(key, amount)
+
+
+def _run_event_fields():
+    """What this run is, before it does anything: code, config, audience."""
+    cfg = get_config()
+    pushbullet = _parse_recipients(cfg.PUSHBULLET_API_KEYS)
+    email = _parse_recipients(cfg.EMAIL_RECIPIENTS, field_name="EMAIL_RECIPIENTS")
+    return {
+        **environment(),
+        "forced": FORCE_REPROCESS,
+        "digest_enabled": cfg.DIGEST_ENABLED,
+        "provider": cfg.LLM_PROVIDER,
+        "model": cfg.LLM_MODEL or None,
+        "structured_output": cfg.LLM_STRUCTURED_OUTPUT,
+        "reasoning_effort": cfg.LLM_REASONING_EFFORT or None,
+        "languages": ",".join(sorted(get_requested_languages())),
+        "prompt_sha": sha8(DIGEST_PROMPT_TEMPLATE),
+        "prompt_chars": len(DIGEST_PROMPT_TEMPLATE),
+        "recipients_pushbullet": len(pushbullet),
+        "recipients_email": len(email),
+    }
+
+
 def run(playwright):
+    global CURRENT_RUN_EVENT
+    with Event("run", **_run_event_fields()) as run_event:
+        CURRENT_RUN_EVENT = run_event
+        try:
+            _run(playwright, run_event)
+        finally:
+            CURRENT_RUN_EVENT = None
+
+
+def _run(playwright, run_event):
     try:
         launch_options = {"headless": True}
         executable_path = resolve_browser_executable_path()
@@ -1269,6 +1329,7 @@ def process_all_articles(playwright, browser, context, page):
             logger.warning("No articles found in feed")
             return
         logger.info(f"Found {len(articles)} article(s) in feed")
+        _tally(CURRENT_RUN_EVENT, "articles_seen", len(articles))
 
         processed_ids = load_processed_articles()
 
@@ -1281,6 +1342,8 @@ def process_all_articles(playwright, browser, context, page):
             if not FORCE_REPROCESS and article_id in processed_ids:
                 logger.info(f"Article {article_id} already processed, skipping")
                 continue
+
+            _tally(CURRENT_RUN_EVENT, "articles_new")
 
             if FORCE_REPROCESS:
                 logger.info(f"Force mode active: processing article {article_id} without updating state")
@@ -1295,10 +1358,12 @@ def process_all_articles(playwright, browser, context, page):
                     # Left unmarked deliberately so the next run retries it.
                     logger.warning(f"Article {article_id} not fully processed, leaving unmarked")
                     continue
+                _tally(CURRENT_RUN_EVENT, "articles_processed")
                 if not FORCE_REPROCESS:
                     save_processed_article(article_id)
                     processed_ids.append(article_id)
             except Exception as e:
+                _tally(CURRENT_RUN_EVENT, "articles_failed")
                 logger.error(f"Error processing article {article_id}: {str(e)}")
                 logger.error(f"Stack trace: {traceback.format_exc()}")
                 notify_admin(
@@ -1392,10 +1457,23 @@ def process_article_content(playwright, browser, context, article):
     was delivered, so the caller may mark it processed. Returns False (or raises)
     otherwise, leaving the article unmarked for retry on the next run.
     """
+    with Event("article", article_id=_get_article_id(article), forced=FORCE_REPROCESS) as event:
+        global CURRENT_ARTICLE_EVENT
+        CURRENT_ARTICLE_EVENT = event
+        try:
+            handled = _process_article_content(playwright, browser, context, article, event)
+        finally:
+            CURRENT_ARTICLE_EVENT = None
+        event["outcome"] = "ok" if handled else "incomplete"
+        return handled
+
+
+def _process_article_content(playwright, browser, context, article, event):
     try:
         body = _read_visible_article_body(article)
     except ValueError as exc:
         logger.warning(f"Skipping article with no readable body: {exc}")
+        event["skipped"] = "unreadable_body"
         notify_admin(
             "Article body could not be read",
             "The article markup did not match any known body selector; it stays unmarked for retry.",
@@ -1405,6 +1483,11 @@ def process_article_content(playwright, browser, context, article):
 
     title_el = article.query_selector("h3")
     title = title_el.inner_text() if title_el else "(no title)"
+    post_date = _get_post_date(article)
+    event.update(
+        title_sha8=sha8(title), title_chars=len(title), body_chars=len(body),
+        has_post_date=bool(post_date), mode="digest" if get_config().DIGEST_ENABLED else "translation",
+    )
 
     if not get_config().DIGEST_ENABLED:
         # Translation-only mode: no LLM, no attachment extraction. Each
@@ -1415,6 +1498,7 @@ def process_article_content(playwright, browser, context, article):
             language: (translate(title, dest=language), translate(body, dest=language))
             for language in get_requested_languages()
         }
+        event["notification_chars"] = max(len(body) for _, body in content.values())
         send_multilingual_notification(content)
         return True
 
@@ -1438,13 +1522,22 @@ def process_article_content(playwright, browser, context, article):
     if not pdf_links and not docx_links:
         logger.info("No PDFs or Word documents found in article.")
 
+    event.update(
+        pdf_links=len(pdf_links), docx_links=len(docx_links),
+        attachments=len(attachments),
+        attachments_failed=sum(1 for a in attachments if a.failed),
+        attachment_chars=sum(len(a.text) for a in attachments if not a.failed),
+    )
+
     # Generate one Digest per requested language — never more than the
     # languages recipients actually asked for.
     languages = get_requested_languages()
+    event["languages"] = ",".join(sorted(languages))
     try:
         digests = {language: generate_digest(title, body, attachments, language=language) for language in languages}
     except RuntimeError as e:
         logger.error(f"Digest generation failed: {e}")
+        event["skipped"] = "digest_failed"
         send_notification(
             title="Social Schools update",
             body="Could not generate Digest for the latest article. Will retry on next run.",
@@ -1459,13 +1552,36 @@ def process_article_content(playwright, browser, context, article):
                 digest,
                 failed_attachments=failed_names,
                 original_title=title,
-                post_date=_get_post_date(article),
+                post_date=post_date,
             ),
         )
         for language, digest in digests.items()
     }
+    _record_digest_shape(event, digests, content, title)
     send_multilingual_notification(content)
     return True
+
+
+def _record_digest_shape(event, digests, content, title):
+    """What was produced, as counts and flags — never as text (ADR 0008).
+
+    has_footer is here because a deterministic part of the notification once
+    stopped appearing and nothing in the system could say when.
+    """
+    first = next(iter(digests.values()))
+    rendered = next(iter(content.values()))[1]
+    event.update(
+        topics=len(first.topics),
+        actions=sum(len(topic.actions) for topic in first.topics),
+        bring=sum(len(topic.bring) for topic in first.topics),
+        notes=sum(len(topic.notes) for topic in first.topics),
+        tldr_chars=len(first.tldr or ""),
+        translated_title_chars=len(first.translated_title or ""),
+        notification_chars=len(rendered),
+        has_footer=title in rendered,
+        has_no_action="No action needed" in rendered,
+        has_attachment_warning="could not be read" in rendered,
+    )
 
 
 if __name__ == "__main__":

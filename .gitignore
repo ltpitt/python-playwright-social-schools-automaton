@@ -193,3 +193,9 @@ tests/fixtures/
 # goal.py's working set: candidate prompts and the ledger, both shaped by real posts.
 goal_output/
 goal_ledger.tsv
+
+# Canonical events. Shapes rather than content, but article ids and the rhythm of
+# a family's week are still theirs. Rotated backups too.
+events.jsonl
+events.jsonl.*
+run_report.txt.*

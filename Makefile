@@ -1,4 +1,4 @@
-.PHONY: help install lint test check run loop goal clean corpus product eval eval-cycle bakeoff unprocess-last
+.PHONY: help install lint test check run loop goal health events clean corpus product eval eval-cycle bakeoff unprocess-last
 
 help:
 	@echo "Usage: make <target>"
@@ -16,6 +16,8 @@ help:
 	@echo "  unprocess-last  Forget the last processed article so 'make run' re-sends it"
 	@echo "  loop     Clear loop_output.md and run one loop.sh iteration"
 	@echo "  goal     Rewrite the prompt until the holdout gate passes: make goal TURNS=5"
+	@echo "  health   Compare the last run against the ones before it"
+	@echo "  events   Show the last 20 runs from events.jsonl"
 	@echo "  clean    Remove Python cache directories"
 
 # Install Python dependencies
@@ -65,6 +67,8 @@ bakeoff:
 
 # Complete cycle. Eval runs last so its table is the final output, ready to copy.
 # Neither leg short-circuits the other, but both failures still surface.
+# Health runs in between: it reads the events the live run just wrote and says
+# whether anything about production got worse, which the corpus eval cannot see.
 eval-cycle:
 	@set -e; \
 	git pull --ff-only; \
@@ -74,10 +78,13 @@ eval-cycle:
 	set +e; \
 	$(MAKE) run; \
 	run_status=$$?; \
+	$(MAKE) health; \
+	health_status=$$?; \
 	$(MAKE) eval; \
 	eval_status=$$?; \
 	set -e; \
 	if [ $$run_status -ne 0 ]; then exit $$run_status; fi; \
+	if [ $$health_status -ne 0 ]; then exit $$health_status; fi; \
 	exit $$eval_status
 
 # Drop the most recently processed article so the next 'make run' re-scrapes,
@@ -96,6 +103,18 @@ loop:
 goal:
 	python goal.py $(if $(TURNS),--turns $(TURNS),) $(if $(PATIENCE),--patience $(PATIENCE),) \
 		$(if $(IMPROVER_MODEL),--improver-model $(IMPROVER_MODEL),)
+
+# Did anything get worse? Compares the last run's canonical events against the
+# runs before it. Reads only, costs nothing, no model involved.
+health:
+	python check_events.py $(if $(BASELINE),--baseline-runs $(BASELINE),)
+
+# One line per run, newest last. Everything else is a jq query away.
+events:
+	@test -f events.jsonl || { echo "No events.jsonl yet — run the app once."; exit 0; }
+	@jq -r 'select(.event=="run") | [.ts, .run_id, .outcome, .commit, (.articles_processed//0), \
+		(.llm_cost_usd//0), .model] | @tsv' events.jsonl | tail -20 | \
+		column -t -s "$$(printf '\t')"
 
 # Remove Python cache artefacts (run_report.txt / full_prompt.txt / loop_output.md are kept for inspection)
 clean:

@@ -163,6 +163,9 @@ Two degraded-but-delivered cases still count as processed, because the notificat
 
 Both still raise an admin alert.
 
+## Making the notifications better
+
+The quality of a Digest is measured, not argued about, and the measurement is only as good as the expectations behind it. [HOW-TO-IMPROVE.md](HOW-TO-IMPROVE.md) is the working guide: how to add a case, how to write an expectation, how to read the score, and — the part that took a day to learn — why a one-case improvement is noise rather than a result. It is written in Simplified Technical English and assumes no Python.
 
 ## Why this exists
 

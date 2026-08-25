@@ -40,6 +40,8 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "which group or class" in prompt
         assert "date not specified" in prompt
         assert "Do not repeat items listed in 'bring' within 'actions'" in prompt
+        assert "A long message is a selection, not a copy" in prompt
+        assert "never by how interesting it is" in prompt
         assert "24-hour HH:MM" in prompt
         assert "Never use" in prompt and "AM/PM" in prompt
         assert "at most ONE entry per real-world event" in prompt

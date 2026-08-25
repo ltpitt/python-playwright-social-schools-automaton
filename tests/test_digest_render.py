@@ -1,5 +1,25 @@
-from socialschools.digest.render import render_digest_notification
+from socialschools.digest.render import ABRIDGED_NOTE, render_digest_notification
 from socialschools.models import Digest, Topic
+
+
+def test_an_abridged_brief_says_so():
+    """A newsletter digest drops most of the message; a parent must be told that
+
+    Without this line there is no way to tell "nothing else happened" from
+    "forty items did not fit".
+    """
+    data = Digest(translated_title="Newsletter", tldr="Sports day on 18 May.", topics=[])
+
+    assert ABRIDGED_NOTE in render_digest_notification(data, abridged=True)
+    assert ABRIDGED_NOTE not in render_digest_notification(data)
+
+
+def test_the_abridged_note_sits_before_the_footer():
+    """It explains the brief, so it belongs with the brief, not after the sign-off"""
+    data = Digest(translated_title="Newsletter", tldr="Sports day on 18 May.", topics=[])
+
+    rendered = render_digest_notification(data, abridged=True, original_title="Nieuwsbrief")
+    assert rendered.index(ABRIDGED_NOTE) < rendered.index("Nieuwsbrief")
 
 
 def test_render_digest_notification_with_items():

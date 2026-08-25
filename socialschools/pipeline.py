@@ -18,7 +18,7 @@ from .delivery.notify import send_multilingual_notification, send_notification
 from .delivery.recipients import get_requested_languages, parse_recipients
 from .digest.generate import generate_digest
 from .digest.prompt import DIGEST_PROMPT_TEMPLATE
-from .digest.render import render_digest_notification
+from .digest.render import ABRIDGE_SOURCE_CHARS, render_digest_notification
 from .events import Event, environment, sha8
 from .llm.provider import get_provider
 from .scraping.attachments import collect_attachments
@@ -237,6 +237,7 @@ def _deliver_digest(context, article, title, body, post_date, event):
         raise
 
     failed_names = [a.filename for a in attachments if a.failed] or None
+    source_chars = len(body) + sum(len(a.text) for a in attachments if not a.failed)
     content = {
         language: (
             digest.translated_title,
@@ -245,6 +246,7 @@ def _deliver_digest(context, article, title, body, post_date, event):
                 failed_attachments=failed_names,
                 original_title=title,
                 post_date=post_date,
+                abridged=source_chars >= ABRIDGE_SOURCE_CHARS,
             ),
         )
         for language, digest in digests.items()

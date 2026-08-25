@@ -40,7 +40,7 @@ from rich.markup import escape
 from socialschools.console import console, new_table
 from socialschools.digest.hints import DUTCH_MONTHS as _DUTCH_MONTHS, extract_action_hints
 from socialschools.digest.parse import dict_to_digest
-from socialschools.digest.render import render_digest_notification
+from socialschools.digest.render import ABRIDGE_SOURCE_CHARS, render_digest_notification
 from socialschools.paths import (
     EVAL_SUMMARY_FILE,
     EVAL_RESULTS_FILE,
@@ -74,7 +74,7 @@ _SAME_DATE_CLUSTER_LIMIT = 3
 _SINGLE_TOPIC_MAX_CHARS = 400
 _MAX_TOPICS = 6
 # A school newsletter genuinely has many sections, so the topic cap lifts for one.
-_NEWSLETTER_MIN_CHARS = 4000
+_NEWSLETTER_MIN_CHARS = ABRIDGE_SOURCE_CHARS
 _MAX_TOPICS_NEWSLETTER = 12
 
 # A Digest replaces the message; it does not reproduce it. These caps come from
@@ -363,6 +363,7 @@ def render_as_delivered(digest, case):
         failed_attachments=failed or None,
         original_title=case.get("title"),
         post_date=case.get("post_date"),
+        abridged=len(source_text(case)) >= ABRIDGE_SOURCE_CHARS,
     )
 
 

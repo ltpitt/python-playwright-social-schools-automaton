@@ -20,7 +20,7 @@ from tools.evaluate_digests import advisory_warnings, structural_violations
 from socialschools.config import get_config
 from socialschools.digest.generate import generate_digest
 from socialschools.digest.prompt import DIGEST_PROMPT_TEMPLATE
-from socialschools.digest.render import render_digest_notification
+from socialschools.digest.render import ABRIDGE_SOURCE_CHARS, render_digest_notification
 from socialschools.events import sha8
 from socialschools.llm.base import get_last_llm_usage
 from socialschools.models import Attachment
@@ -92,6 +92,14 @@ def archive_product(result, directory=None, keep=HISTORY_KEEP):
     return path
 
 
+def _source_text(case):
+    """Everything the digest was given, matching the evaluator's view of length."""
+    return "\n".join(
+        [case["body"]]
+        + [a["text"] for a in case.get("attachments", []) if not a.get("failed")]
+    )
+
+
 def _attachments(case):
     return [
         Attachment(
@@ -155,6 +163,7 @@ def run_case(case, samples=1):
             failed_attachments=failed,
             original_title=case["title"],
             post_date=case.get("post_date"),
+            abridged=len(_source_text(case)) >= ABRIDGE_SOURCE_CHARS,
         )
         return {
             "id": case["id"],

@@ -33,6 +33,7 @@ Rules:
 - tldr must never be empty, and must state the substance rather than describe the message. A parent who reads only this line should already know the most important thing. Write 'School trip on 01 Sep: pack a raincoat and a packed lunch', never 'This message provides important information about the school trip and upcoming tests'.
 - All text values in <<LANGUAGE>>.
 - Output ONLY the JSON object, nothing else.
+- A long message is a selection, not a copy. When the message is long, keep every entry that asks the parent to do something or that carries a date, and leave out the rest: policies and procedures, absence and complaints rules, staff lists and contact details, enrolment rules for future years, survey results, and the holiday or study-day tables reprinted in every newsletter. Decide by 'does this need an action or carry a date', never by how interesting it is. The reader is told the brief is a summary and where the original is.
 - Keep the total length of the JSON output concise, aiming for under 1500 characters. Prioritize the most critical information for parents.
 
 --- MESSAGE START ---

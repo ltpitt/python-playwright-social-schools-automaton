@@ -17,8 +17,17 @@ DATE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 TIME_HINT_RE = re.compile(r'\b([01]?\d|2[0-3])[:.][0-5]\d\b')
+# 'graag' is the trap here: it means both "please" and "gladly", so a bare match
+# pulls in "ik lees graag" and "ik zou graag een kat hebben" from a teacher
+# interview and hands the model an obligation that does not exist. Requiring a
+# following word, and excluding the ones that begin a preference rather than a
+# request, keeps "graag meenemen" and "graag voor vrijdag" while dropping those.
 IMPERATIVE_HINT_RE = re.compile(
-    r'\b(graag|gelieve|zorg dat|vergeet niet|lever .{0,20}in|meenemen|inleveren|aanmeld\w*|betaal\w*|onderteken\w*)',
+    r'\b(?:'
+    r'graag\s+(?!ik\b|een\b|de\b|het\b|en\b|met\b|mijn\b)'
+    r'|gelieve|zorg dat|vergeet niet|uiterlijk'
+    r'|lever .{0,20}in|meenemen|inleveren|aanmeld\w*|betaal\w*|onderteken\w*'
+    r')',
     re.IGNORECASE,
 )
 

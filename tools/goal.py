@@ -135,16 +135,39 @@ def rank(record):
     return (record["holdout_passed"], record["score"])
 
 
+# Rerunning the same prompt through the same model at temperature 0 still moves
+# one case in twenty (measured with --samples 3). A turn that gains a single
+# holdout case has therefore proved nothing, and accepting it means keeping a
+# prompt chosen by a coin flip. These are the margins a turn must clear.
+HOLDOUT_MARGIN = 2
+SCORE_MARGIN = 0.02
+
+
+def is_better(candidate, incumbent):
+    """Whether a turn beat another by more than the measurement can tell apart."""
+    gain = candidate["holdout_passed"] - incumbent["holdout_passed"]
+    if gain >= HOLDOUT_MARGIN:
+        return True
+    if gain < 0:
+        return False
+    return candidate["score"] - incumbent["score"] >= SCORE_MARGIN
+
+
 def best_turn(history):
-    """The turn to keep. Ties go to the earliest, so a no-op rewrite never wins."""
-    return max(history, key=lambda record: (rank(record), -record["turn"]))
+    """The turn to keep. A later turn must beat the incumbent by more than noise,
+    so ties go to the earliest and a no-op rewrite never wins."""
+    best = history[0]
+    for record in history[1:]:
+        if is_better(record, best):
+            best = record
+    return best
 
 
 def stalled_turns(history):
     """How many of the most recent turns failed to beat everything before them."""
     count = 0
     for index in range(len(history) - 1, 0, -1):
-        if rank(history[index]) > max(rank(record) for record in history[:index]):
+        if is_better(history[index], best_turn(history[:index])):
             break
         count += 1
     return count
@@ -277,7 +300,7 @@ def _run(command, allow_failure=False):
     return code
 
 
-def measure():
+def measure(samples=1):
     """Regenerate every case with the prompt on disk and score it. Sends nothing.
 
     Not forced: the case fingerprint already covers the prompt, so a rewrite
@@ -287,7 +310,8 @@ def measure():
     """
     # Called directly rather than through make: a failing gate is normal here, and
     # make would decorate the expected non-zero exit with an alarming error banner.
-    _run([sys.executable, "-m", "tools.run_digest"])
+    _run([sys.executable, "-m", "tools.run_digest"]
+         + (["--samples", str(samples)] if samples > 1 else []))
     _run([sys.executable, "-m", "tools.evaluate_digests", "--summary", SUMMARY],
          allow_failure=True)
     with open(SUMMARY, encoding="utf-8") as f:
@@ -324,7 +348,7 @@ def announce(record, improved):
 
 def record_turn(history, record):
     """Commit a turn to the history, the ledger file and the screen, in that order."""
-    improved = not history or rank(record) > max(rank(earlier) for earlier in history)
+    improved = not history or is_better(record, best_turn(history))
     history.append(record)
     append_ledger(record)
     announce(record, improved)
@@ -381,6 +405,9 @@ def main():
                         help="give up after this many turns without improvement")
     parser.add_argument("--improver-model",
                         help="model that rewrites the prompt (default: the configured one)")
+    parser.add_argument("--samples", type=int, default=1,
+                        help="generate each case this many times per turn; "
+                             "above 1 buys a turn that is not a coin flip, at that many times the cost")
     args = parser.parse_args()
 
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
@@ -390,7 +417,7 @@ def main():
     console.print("[head]Goal:[/head] every holdout case passes, "
                   f"within {args.turns} turn(s)")
     console.print("[muted]turn 0 — measuring the baseline[/muted]")
-    summary, results, product = measure()
+    summary, results, product = measure(args.samples)
     history = []
     record_turn(history, turn_record(0, summary, template, archive(template, 0)))
 
@@ -422,7 +449,7 @@ def main():
         with open(PROMPT_PATH, "w", encoding="utf-8") as f:
             f.write(candidate + "\n")
         template = candidate
-        summary, results, product = measure()
+        summary, results, product = measure(args.samples)
         record_turn(history, turn_record(turn, summary, template, archive(template, turn)))
 
     best = best_turn(history)

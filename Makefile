@@ -82,7 +82,7 @@ diff:
 # nothing. Never part of 'make check'.
 goal:
 	$(PYTHON) -m tools.goal $(if $(TURNS),--turns $(TURNS),) $(if $(PATIENCE),--patience $(PATIENCE),) \
-		$(if $(IMPROVER_MODEL),--improver-model $(IMPROVER_MODEL),)
+		$(if $(SAMPLES),--samples $(SAMPLES),) $(if $(IMPROVER_MODEL),--improver-model $(IMPROVER_MODEL),)
 
 # Did anything get worse? Compares the last run's canonical events against the
 # runs before it. Reads only, costs nothing, no model involved.

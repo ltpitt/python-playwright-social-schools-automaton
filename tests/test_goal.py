@@ -9,6 +9,7 @@ from tools.goal import (
     build_improver_prompt,
     failing_cases,
     format_ledger_row,
+    is_better,
     rank,
     repair_prompt,
     should_stop,
@@ -101,13 +102,46 @@ class TestRanking:
         assert best_turn(history)["turn"] == 1
 
 
+class TestNoiseMargin:
+    """One case in twenty moves on a rerun of the same prompt, so one case proves nothing."""
+
+    def test_a_single_holdout_case_is_not_an_improvement(self):
+        assert not is_better(_turn(1, holdout_passed=3, score=0.50),
+                             _turn(0, holdout_passed=2, score=0.50))
+
+    def test_two_holdout_cases_are(self):
+        assert is_better(_turn(1, holdout_passed=4, score=0.50),
+                         _turn(0, holdout_passed=2, score=0.50))
+
+    def test_a_clear_score_gain_counts_without_moving_a_case(self):
+        assert is_better(_turn(1, holdout_passed=2, score=0.60),
+                         _turn(0, holdout_passed=2, score=0.50))
+
+    def test_a_score_gain_inside_the_noise_does_not(self):
+        assert not is_better(_turn(1, holdout_passed=2, score=0.505),
+                             _turn(0, holdout_passed=2, score=0.500))
+
+    def test_losing_a_case_is_never_an_improvement(self):
+        assert not is_better(_turn(1, holdout_passed=1, score=0.99),
+                             _turn(0, holdout_passed=2, score=0.50))
+
+    def test_best_turn_keeps_the_baseline_over_a_one_case_gain(self):
+        history = [_turn(0, holdout_passed=3, score=0.50), _turn(1, holdout_passed=4, score=0.51)]
+        assert best_turn(history)["turn"] == 0
+
+
 class TestStalling:
     def test_a_single_baseline_has_not_stalled(self):
         assert stalled_turns([_turn(0)]) == 0
 
     def test_improvement_resets_the_count(self):
-        history = [_turn(0, holdout_passed=1), _turn(1, holdout_passed=2)]
+        history = [_turn(0, holdout_passed=1), _turn(1, holdout_passed=3)]
         assert stalled_turns(history) == 0
+
+    def test_a_one_case_gain_still_counts_as_stalled(self):
+        """Otherwise the loop spends its patience chasing noise."""
+        history = [_turn(0, holdout_passed=1), _turn(1, holdout_passed=2)]
+        assert stalled_turns(history) == 1
 
     def test_counts_consecutive_turns_without_improvement(self):
         history = [_turn(0, holdout_passed=2), _turn(1, holdout_passed=2), _turn(2, holdout_passed=1)]
@@ -288,12 +322,12 @@ def loop(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "load_prompt_template",
                         lambda path=None: prompt_path.read_text(encoding="utf-8").rstrip("\n"))
 
-    def run(scores, proposals, turns=3):
+    def run(scores, proposals, turns=3, cases=2):
         """scores: holdout passes per measure() call. proposals: what the model returns."""
         measured = iter(scores)
         offered = iter(proposals)
         monkeypatch.setattr(module, "measure",
-                            lambda: (_summary(next(measured)), [], {"cases": []}))
+                            lambda samples=1: (_summary(next(measured), cases), [], {"cases": []}))
         monkeypatch.setattr(module, "propose_template",
                             lambda prompt, model=None: next(offered))
         monkeypatch.setattr(sys, "argv", ["goal.py", "--turns", str(turns), "--patience", "2"])
@@ -314,9 +348,16 @@ class TestLoopWiring:
         assert "BASELINE" in final
 
     def test_keeps_the_best_turn_not_the_last(self, loop):
-        final = loop(scores=[0, 1, 0],
+        # A two-case gain, because one case is inside the rerun noise and is ignored.
+        final = loop(scores=[0, 2, 0], cases=4,
                      proposals=[_valid_template("BEST"), _valid_template("WORSE")], turns=2)
         assert "BEST" in final
+
+    def test_a_one_case_gain_does_not_win_the_prompt(self, loop):
+        """It is a coin flip, and keeping it means the loop tuned toward noise."""
+        final = loop(scores=[0, 1, 0], cases=4,
+                     proposals=[_valid_template("LUCKY"), _valid_template("WORSE")], turns=2)
+        assert "BASELINE" in final
 
     def test_an_invalid_candidate_never_reaches_the_prompt_file(self, loop, tmp_path):
         # Each turn costs two proposals now: the answer, then the repair attempt.
@@ -332,7 +373,7 @@ class TestLoopWiring:
         assert "REPAIRED" in final
 
     def test_the_ledger_records_every_turn(self, loop, tmp_path):
-        loop(scores=[0, 1, 0],
+        loop(scores=[0, 2, 0], cases=4,
              proposals=[_valid_template("BEST"), _valid_template("WORSE")], turns=2)
         rows = (tmp_path / "goal_ledger.tsv").read_text(encoding="utf-8").strip().splitlines()
         assert rows[0].startswith("turn\t")

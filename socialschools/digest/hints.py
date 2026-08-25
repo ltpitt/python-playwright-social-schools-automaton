@@ -85,7 +85,9 @@ def parse_post_datetime(posted, today=None):
         month_abbr = DUTCH_MONTHS.get(month_nl)
         if not month_abbr:
             return None
-        result = f"{int(day)} {month_abbr}"
+        # Zero-padded, because that is what the prompt demands of every dated
+        # entry, and '9 Jun' beside '09 Jun' in one notification reads as a slip.
+        result = f"{int(day):02d} {month_abbr}"
         if time_part:
             result += f" {time_part}"
         return result
@@ -93,7 +95,7 @@ def parse_post_datetime(posted, today=None):
     resolved = resolve_relative_dutch_date(posted, today or date.today())
     if not resolved:
         return None
-    result = f"{resolved.day} {MONTH_ABBR[resolved.month - 1]}"
+    result = f"{resolved.day:02d} {MONTH_ABBR[resolved.month - 1]}"
     time_match = TIME_OF_DAY_RE.search(posted)
     if time_match:
         result += f" {time_match.group(1)}"

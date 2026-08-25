@@ -17,13 +17,13 @@ def _mock_article_with_date_text(text):
 def test_get_post_date_valid_with_time():
     """Test that real Social Schools text ('D month om HH:MM') keeps both date and time"""
     article = _mock_article_with_date_text("7 juli om 13:19")
-    assert get_post_date(article) == "7 Jul 13:19"
+    assert get_post_date(article) == "07 Jul 13:19"
 
 
 def test_get_post_date_valid_without_time():
-    """Test that a date with no time suffix still parses to just 'D Mon'"""
+    """Test that a date with no time suffix still parses to just 'DD Mon'"""
     article = _mock_article_with_date_text("1 juli")
-    assert get_post_date(article) == "1 Jul"
+    assert get_post_date(article) == "01 Jul"
 
 
 @pytest.mark.parametrize("dutch,expected_abbr", [
@@ -40,13 +40,13 @@ def test_get_post_date_all_dutch_months(dutch, expected_abbr):
 def test_get_post_date_case_insensitive():
     """Test that month names are matched regardless of case"""
     article = _mock_article_with_date_text("3 JULI om 14:09")
-    assert get_post_date(article) == "3 Jul 14:09"
+    assert get_post_date(article) == "03 Jul 14:09"
 
 
-def test_get_post_date_single_digit_day():
-    """Test that a single-digit day is not zero-padded"""
+def test_get_post_date_pads_a_single_digit_day():
+    """The date line shares the notification with entries the prompt pads"""
     article = _mock_article_with_date_text("3 juli om 14:09")
-    assert get_post_date(article) == "3 Jul 14:09"
+    assert get_post_date(article) == "03 Jul 14:09"
 
 
 def test_get_post_date_no_date_element():
@@ -71,7 +71,7 @@ def test_get_post_date_unparseable_text():
 def test_get_post_date_ignores_edited_suffix():
     """An edited post appends ', bijgewerkt ...'; the original posting time must win"""
     article = _mock_article_with_date_text("7 juli om 13:19,\xa0bijgewerkt\xa07 juli om 16:47")
-    assert get_post_date(article) == "7 Jul 13:19"
+    assert get_post_date(article) == "07 Jul 13:19"
 
 
 @pytest.mark.parametrize("word,expected_day", [

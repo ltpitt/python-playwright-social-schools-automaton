@@ -77,6 +77,13 @@ _MAX_TOPICS = 6
 _NEWSLETTER_MIN_CHARS = 4000
 _MAX_TOPICS_NEWSLETTER = 12
 
+# A Digest replaces the message; it does not reproduce it. These caps come from
+# the corpus: every well-formed single-subject brief sits far below the first,
+# and only newsletters that reprint the school guide as notes breach the second.
+# Re-derive them if the corpus grows: `make eval` prints the length that failed.
+_MAX_NOTIFICATION_CHARS = 1500
+_MAX_NOTIFICATION_CHARS_NEWSLETTER = 3000
+
 # Attachments are newsletters as often as they are class letters, and a
 # newsletter is full of dates that oblige nobody: sports results, museum
 # openings, city festivals, its own issue date. A date only counts as one the
@@ -364,6 +371,22 @@ def render_as_delivered(digest, case):
 _UNTRANSLATED_VIOLATION_MIN = 2
 
 
+def find_notification_too_long(digest, case):
+    """A brief nobody will read to the end has stopped being a brief.
+
+    Topic count was already capped, but length was not, and the two come apart:
+    a newsletter can hold to twelve topics and still reproduce the whole school
+    guide underneath them, one reference note at a time.
+    """
+    limit = (_MAX_NOTIFICATION_CHARS_NEWSLETTER
+             if len(source_text(case)) >= _NEWSLETTER_MIN_CHARS
+             else _MAX_NOTIFICATION_CHARS)
+    length = len(render_as_delivered(digest, case))
+    if length <= limit:
+        return []
+    return [f"notification is {length} characters, past the {limit} a parent will read"]
+
+
 def structural_violations(digest, case):
     text = source_text(case)
     untranslated = find_untranslated_items(digest, text)
@@ -374,6 +397,7 @@ def structural_violations(digest, case):
         # filed as a note renders below the actions and gets missed.
         + find_bring_repeated_in_actions(digest)
         + find_actions_hidden_in_notes(digest)
+        + find_notification_too_long(digest, case)
         + (untranslated if len(untranslated) >= _UNTRANSLATED_VIOLATION_MIN else [])
         + [problem for problem in find_structure_problems(digest, text)
            if "tldr is empty" in problem]

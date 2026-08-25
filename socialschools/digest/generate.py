@@ -7,6 +7,7 @@ better than no notification and better than an infinite retry loop.
 """
 import json
 import logging
+import re
 
 from ..config import get_config
 from ..delivery.admin import notify_admin
@@ -20,12 +21,26 @@ logger = logging.getLogger(__name__)
 
 FALLBACK_TLDR = "(Could not generate summary \u2014 open the original post for details)"
 
+# Social Schools appends a storage UUID to every attachment it serves. The model
+# copies the filename into the brief verbatim, so forty characters of hex reach
+# a parent who only needed the name of the letter.
+_STORAGE_UUID_RE = re.compile(
+    r'-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\.[A-Za-z0-9]+$)',
+    re.IGNORECASE,
+)
+
+
+def readable_filename(filename):
+    """An attachment's name without the storage id nobody can use."""
+    return _STORAGE_UUID_RE.sub("", filename)
+
 
 def _attachment_section(attachments):
     if not attachments:
         return ""
-    extracted = [f"\n\n[Attachment: {a.filename}]\n{a.text}" for a in attachments if not a.failed]
-    failed = [f"\n\n[Attachment: {a.filename} \u2014 could not be extracted]"
+    extracted = [f"\n\n[Attachment: {readable_filename(a.filename)}]\n{a.text}"
+                 for a in attachments if not a.failed]
+    failed = [f"\n\n[Attachment: {readable_filename(a.filename)} \u2014 could not be extracted]"
               for a in attachments if a.failed]
     return "".join(extracted + failed)
 

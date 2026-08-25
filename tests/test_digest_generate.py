@@ -3,8 +3,19 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from socialschools.digest.generate import generate_digest
+from socialschools.digest.generate import generate_digest, readable_filename
 from socialschools.models import Attachment, Digest
+
+
+def test_readable_filename_drops_the_storage_uuid():
+    """The model copies the filename into the brief, so the hex reaches a parent"""
+    assert readable_filename(
+        "class-letter-096058d0-bf7c-4714-ba6a-67b17716ac7a.pdf") == "class-letter.pdf"
+
+
+def test_readable_filename_leaves_an_ordinary_name_alone():
+    assert readable_filename("class-letter.pdf") == "class-letter.pdf"
+    assert readable_filename("trip-2026-09-01.docx") == "trip-2026-09-01.docx"
 
 
 def test_generate_digest(mock_config):

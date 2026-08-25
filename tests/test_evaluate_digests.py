@@ -240,6 +240,30 @@ def test_duplication_fails_the_gate_rather_than_only_warning():
     assert evaluate_digests.advisory_warnings(repeated, PLAIN_CASE) == []
 
 
+def test_a_notification_too_long_to_read_is_a_violation():
+    """A newsletter can hold to its topic cap and still reprint the school guide"""
+    wall = _digest([Topic(heading="General", actions=[], bring=[],
+                          notes=[f"Reference note number {n} about school policy"
+                                 for n in range(60)])])
+    brief = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
+
+    assert any("past the" in v
+               for v in evaluate_digests.find_notification_too_long(wall, PLAIN_CASE))
+    assert evaluate_digests.find_notification_too_long(brief, PLAIN_CASE) == []
+
+
+def test_a_newsletter_is_allowed_a_longer_notification_than_a_short_post():
+    """The source length decides the budget, as it already does for topic count"""
+    digest = _digest([Topic(heading="General", actions=[], bring=[],
+                            notes=[f"Reference note number {n} about school policy"
+                                   for n in range(40)])])
+    short_post = {"body": "x" * 500, "attachments": []}
+    newsletter = {"body": "x" * 8000, "attachments": []}
+
+    assert evaluate_digests.find_notification_too_long(digest, short_post)
+    assert evaluate_digests.find_notification_too_long(digest, newsletter) == []
+
+
 def test_find_structure_problems_flags_empty_tldr():
     digest = _digest([Topic(heading="T", actions=["Do it"], bring=[], notes=[])], tldr="")
     assert "tldr is empty" in evaluate_digests.find_structure_problems(digest, "body")

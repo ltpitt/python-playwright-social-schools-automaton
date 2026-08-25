@@ -5,7 +5,6 @@ This document tells you how to make the notifications better.
 You do not need to be a programmer. You need to read the notifications that you
 get on your telephone. Then you must tell the program what was wrong.
 
-All the text in this document uses Simplified Technical English.
 
 ---
 
@@ -42,8 +41,11 @@ Do these six steps. Do them in this sequence.
 2. Write down what was wrong.
 3. Add the article to the corpus.
 4. Write an expectation.
-5. Measure.
-6. Change one thing, then measure again.
+5. Measure. The test now fails.
+6. Wait. Collect the same type of error from other articles.
+7. Correct the pattern with chapter 10, then measure again.
+
+Steps 1 to 5 make an error **visible**. Steps 6 and 7 **correct** it.
 
 The next chapters give you the details.
 
@@ -169,6 +171,37 @@ This rule accepts `raincoat`. It also accepts `rain jacket`.
 > **Important:** If you copy the words from the notification, the test always
 > passes. Then the test finds nothing. It only stops the program from becoming
 > worse later.
+
+### What happens after you add an expectation
+
+The notification does not become better. Not yet.
+
+An expectation is a **detector**. It is not a correction. Before, the program
+made a bad notification and no person knew. Now the test says `FAIL`.
+
+You cannot correct an error that you cannot see. This is the first step.
+
+One expectation makes one case fail. Chapter 9 tells you that one case is
+noise. Therefore do not correct anything yet.
+
+Wait. Add an expectation each week. When two or three articles show the **same
+type** of error, you have a pattern. A pattern is sufficient to correct.
+
+Then go to chapter 10. That chapter corrects the pattern.
+
+### Example: from `towel` to a better notification
+
+| When | What you do | The result |
+|---|---|---|
+| Week 1 | A swimming lesson has no `towel`. You add the expectation. | 1 case fails. This is noise. Wait. |
+| Week 2 | A sports day has no `gym shoes`. You add the expectation. | 2 cases fail. |
+| Week 3 | A school trip has no `packed lunch`. You add the expectation. | 3 cases fail. This is a pattern. |
+| Week 3 | You give the command `make goal TURNS=5`. | The model writes new instructions. |
+| Week 3 | The program measures again. | The 3 cases pass. The notifications now tell you what to bring. |
+
+The pattern is: **the program forgets the things that a child must bring.**
+
+You wrote the specification. The computer changed the program.
 
 ---
 
@@ -322,10 +355,15 @@ Then:
 
 1. Read the notifications that your telephone received this week.
 2. Write an expectation for each error that you found.
-3. Do not change the instructions. Only add expectations.
+3. Count the failures of the same type.
 
-The expectations become better each week. After some weeks the test is strong
-enough. Then you can change the instructions and believe the result.
+If you have one failure of a type, do nothing more. One case is noise.
+
+If you have two or three failures of the same type, correct them. Use chapter
+10. Then measure again.
+
+Most weeks you only add expectations. This is correct. The test becomes
+stronger each week, and a strong test is what makes a correction possible.
 
 ---
 
@@ -356,9 +394,13 @@ enough. Then you can change the instructions and believe the result.
 
 1. Read your notifications.
 2. Write an expectation when something is wrong.
-3. Measure two times before you believe a result.
-4. Change one thing.
-5. Keep the change only when it moves two cases.
+3. The test now fails. The notification is not yet better.
+4. Wait until two or three articles show the same type of error.
+5. Give the command `make goal` to correct the pattern.
+6. Keep the correction only when it moves two cases.
+
+The expectations are the specification. The instructions are the program. You
+write the specification. The computer changes the program.
 
 The test becomes better when you add expectations. The notifications become
 better when the test is good. Add the expectations first.

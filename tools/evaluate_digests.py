@@ -208,9 +208,9 @@ def _date_is_obligation(body, day, month_nl):
     return False
 
 
-def find_missing_hint_dates(digest, body):
+def find_missing_hint_dates(digest, body, case):
     """Obligation-bearing source dates that reach no entry."""
-    rendered = render_digest_notification(digest).lower()
+    rendered = render_as_delivered(digest, case).lower()
     missing = []
     for hint in extract_action_hints(body):
         match = _HINT_DATE_RE.match(hint)
@@ -341,6 +341,24 @@ def source_text(case):
     )
 
 
+def render_as_delivered(digest, case):
+    """The notification exactly as a parent receives it.
+
+    The evaluator used to render without the footer or the post date, so a
+    date expectation was graded against text that structurally could not
+    contain the date line — which quietly pushed the prompt to repeat the date
+    inside entries. Scoring the delivered string keeps the measurement and the
+    product the same artefact.
+    """
+    failed = [a["filename"] for a in case.get("attachments", []) if a.get("failed")]
+    return render_digest_notification(
+        digest,
+        failed_attachments=failed or None,
+        original_title=case.get("title"),
+        post_date=case.get("post_date"),
+    )
+
+
 # One item could be a loanword spelled the same in both languages; a whole list
 # of them cannot be, so only a pattern of them proves translation was skipped.
 _UNTRANSLATED_VIOLATION_MIN = 2
@@ -351,6 +369,11 @@ def structural_violations(digest, case):
     untranslated = find_untranslated_items(digest, text)
     return (
         find_placeholder_dates(digest)
+        # Both are duplication rather than judgement calls: an item in 'bring'
+        # that is also an action reaches the parent twice, and an instruction
+        # filed as a note renders below the actions and gets missed.
+        + find_bring_repeated_in_actions(digest)
+        + find_actions_hidden_in_notes(digest)
         + (untranslated if len(untranslated) >= _UNTRANSLATED_VIOLATION_MIN else [])
         + [problem for problem in find_structure_problems(digest, text)
            if "tldr is empty" in problem]
@@ -364,11 +387,9 @@ def advisory_warnings(digest, case):
     return (
         find_near_duplicates(digest)
         + find_same_date_clusters(digest)
-        + find_missing_hint_dates(digest, text)
-        + find_bring_repeated_in_actions(digest)
+        + find_missing_hint_dates(digest, text, case)
         + find_meta_tldr(digest)
         + find_unpadded_date_prefixes(digest)
-        + find_actions_hidden_in_notes(digest)
         + (untranslated if len(untranslated) < _UNTRANSLATED_VIOLATION_MIN else [])
         + [problem for problem in find_structure_problems(digest, text)
            if "tldr is empty" not in problem]
@@ -433,7 +454,7 @@ def phrase_present(phrase, text):
     return any(pattern.search(haystack) for pattern in patterns if pattern)
 
 
-def closest_line(phrase, digest):
+def closest_line(phrase, digest, case):
     """The digest line most like a phrase it failed to carry.
 
     A miss is either an omission or an acceptable paraphrase, and the two want
@@ -444,23 +465,23 @@ def closest_line(phrase, digest):
     if not wanted:
         return ""
     best, overlap = "", 0
-    for line in render_digest_notification(digest).splitlines():
+    for line in render_as_delivered(digest, case).splitlines():
         shared = len(wanted & set(_tokens(line)))
         if shared > overlap:
             best, overlap = line.strip(), shared
     return best
 
 
-def score_recall(digest, expected):
-    """Fraction of must-mention phrases present in the rendered notification."""
+def score_recall(digest, case, expected):
+    """Fraction of must-mention phrases present in the delivered notification."""
     if not expected:
         return 0, 0, []
-    rendered = render_digest_notification(digest)
+    rendered = render_as_delivered(digest, case)
     missing = [phrase for phrase in expected if not phrase_present(phrase, rendered)]
     return len(expected) - len(missing), len(expected), missing
 
 
-def find_unfaithful_claims(digest, forbidden):
+def find_unfaithful_claims(digest, case, forbidden):
     """Must-not-mention phrases the digest states anyway.
 
     These are the expensive failures: a time the message never gave, an
@@ -468,15 +489,15 @@ def find_unfaithful_claims(digest, forbidden):
     """
     if not forbidden:
         return []
-    rendered = render_digest_notification(digest)
+    rendered = render_as_delivered(digest, case)
     return [f"states what the message does not: {phrase!r}"
             for phrase in forbidden if phrase_present(phrase, rendered)]
 
 
 def _score_one(digest, case, expected):
     violations = structural_violations(digest, case)
-    violations += find_unfaithful_claims(digest, expected["must_not_mention"])
-    hits, total, missing = score_recall(digest, expected["must_mention"])
+    violations += find_unfaithful_claims(digest, case, expected["must_not_mention"])
+    hits, total, missing = score_recall(digest, case, expected["must_mention"])
     return violations, hits, total, missing
 
 
@@ -524,7 +545,7 @@ def evaluate_product_case(record, expected):
         "recall_hits": hits,
         "recall_total": total,
         "recall_missing": missing,
-        "recall_near_misses": {phrase: closest_line(phrase, digest) for phrase in missing},
+        "recall_near_misses": {phrase: closest_line(phrase, digest, case) for phrase in missing},
         "warnings": advisory_warnings(digest, case),
         "samples": len(sample_scores),
         "sample_scores": sample_scores,

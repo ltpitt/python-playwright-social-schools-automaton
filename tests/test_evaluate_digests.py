@@ -59,6 +59,11 @@ def _digest(topics, tldr="Summary"):
     return Digest(translated_title="T", tldr=tldr, topics=topics)
 
 
+# No title and no post date, so these tests score the digest body on its own.
+# Chrome-sensitive behaviour is covered separately, against a case that has both.
+PLAIN_CASE = {"body": "", "attachments": []}
+
+
 # =============================================================================
 # STRUCTURAL AND ADVISORY CHECKS
 # =============================================================================
@@ -138,7 +143,7 @@ def test_find_missing_hint_dates_ignores_newsletter_filler():
     body = ("Tot en met 11 oktober hangt het meisje naast haar ouders in het "
             "museum aan het Klein Heiligland.")
     digest = _digest([Topic(heading="News", actions=[], bring=[], notes=["a note"])])
-    assert evaluate_digests.find_missing_hint_dates(digest, body) == []
+    assert evaluate_digests.find_missing_hint_dates(digest, body, PLAIN_CASE) == []
 
 
 def test_find_same_date_clusters_flags_one_event_split_across_many_lines():
@@ -172,7 +177,7 @@ def test_find_missing_hint_dates_still_flags_school_event():
     """A school trip date is the whole reason the tool exists"""
     body = "Het schoolreisje is op 1 september, we vertrekken om 08:30."
     digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
-    assert evaluate_digests.find_missing_hint_dates(digest, body) == [
+    assert evaluate_digests.find_missing_hint_dates(digest, body, PLAIN_CASE) == [
         "source date not in digest: 1 Sep"]
 
 
@@ -198,13 +203,22 @@ def test_find_structure_problems_still_caps_topics_on_a_normal_post():
 def test_find_missing_hint_dates_flags_dropped_date():
     body = "Op dinsdag 1 september gaan wij op schoolreisje."
     digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
-    assert evaluate_digests.find_missing_hint_dates(digest, body) == ["source date not in digest: 1 Sep"]
+    assert evaluate_digests.find_missing_hint_dates(digest, body, PLAIN_CASE) == [
+        "source date not in digest: 1 Sep"]
+
+
+def test_find_missing_hint_dates_accepts_a_date_carried_by_the_post_date_line():
+    """The parent sees the post date, so a date only in that line is not missing"""
+    body = "Op dinsdag 1 september gaan wij op schoolreisje."
+    digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
+    case = {"body": body, "attachments": [], "title": "Schoolreisje", "post_date": "01 Sep 09:00"}
+    assert evaluate_digests.find_missing_hint_dates(digest, body, case) == []
 
 
 def test_find_missing_hint_dates_passes_when_date_present():
     body = "Op dinsdag 1 september gaan wij op schoolreisje."
     digest = _digest([Topic(heading="Trip", actions=["01 Sep - school trip"], bring=[], notes=[])])
-    assert evaluate_digests.find_missing_hint_dates(digest, body) == []
+    assert evaluate_digests.find_missing_hint_dates(digest, body, PLAIN_CASE) == []
 
 
 def test_find_bring_repeated_in_actions():
@@ -212,6 +226,18 @@ def test_find_bring_repeated_in_actions():
                             actions=["Provide a towel for the trip"],
                             bring=["towel"], notes=[])])
     assert evaluate_digests.find_bring_repeated_in_actions(digest)
+
+
+def test_duplication_fails_the_gate_rather_than_only_warning():
+    """Both reach the parent as visible defects, so neither is advisory"""
+    repeated = _digest([Topic(heading="Trip", actions=["Provide a towel for the trip"],
+                              bring=["towel"], notes=[])])
+    misfiled = _digest([Topic(heading="Trip", actions=[], bring=[],
+                              notes=["Please bring a signed form"])])
+
+    assert structural_violations(repeated, PLAIN_CASE)
+    assert structural_violations(misfiled, PLAIN_CASE)
+    assert evaluate_digests.advisory_warnings(repeated, PLAIN_CASE) == []
 
 
 def test_find_structure_problems_flags_empty_tldr():
@@ -241,13 +267,22 @@ def test_score_recall_counts_hits_and_missing():
     digest = _digest([Topic(heading="Trip",
                             actions=["Child must have a swimming diploma"],
                             bring=[], notes=[])])
-    hits, total, missing = evaluate_digests.score_recall(digest, ["swimming diploma", "08:20"])
+    hits, total, missing = evaluate_digests.score_recall(
+        digest, PLAIN_CASE, ["swimming diploma", "08:20"])
     assert (hits, total, missing) == (1, 2, ["08:20"])
+
+
+def test_score_recall_sees_the_post_date_line_the_parent_sees():
+    """Scoring a rendering without the date line failed expectations that were met"""
+    digest = _digest([Topic(heading="Trip", actions=["Pack a bag"], bring=[], notes=[])])
+    case = {"body": "", "attachments": [], "title": "Schoolreisje", "post_date": "01 Sep 09:00"}
+    hits, total, missing = evaluate_digests.score_recall(digest, case, ["01 Sep"])
+    assert (hits, total, missing) == (1, 1, [])
 
 
 def test_score_recall_with_no_expectations_is_neutral():
     digest = _digest([Topic(heading="T", actions=["Do it"], bring=[], notes=[])])
-    assert evaluate_digests.score_recall(digest, []) == (0, 0, [])
+    assert evaluate_digests.score_recall(digest, PLAIN_CASE, []) == (0, 0, [])
 
 
 def test_source_text_includes_attachment_content():
@@ -379,16 +414,16 @@ def test_a_word_expectation_still_matches_its_plural():
 
 def test_score_recall_uses_normalised_matching():
     digest = Digest("t", "Swimming at 08:30", [])
-    hits, total, missing = score_recall(digest, ["8:30", "swimming"])
+    hits, total, missing = score_recall(digest, PLAIN_CASE, ["8:30", "swimming"])
     assert (hits, total, missing) == (2, 2, [])
 
 
 def test_find_unfaithful_claims_flags_invented_facts():
     """Recall alone rewards saying everything; this is what punishes inventing it"""
     digest = Digest("t", "Departure at 09:00", [])
-    assert find_unfaithful_claims(digest, ["09:00"]) == [
+    assert find_unfaithful_claims(digest, PLAIN_CASE, ["09:00"]) == [
         "states what the message does not: '09:00'"]
-    assert find_unfaithful_claims(digest, ["10:00"]) == []
+    assert find_unfaithful_claims(digest, PLAIN_CASE, ["10:00"]) == []
 
 
 def test_evaluate_product_case_counts_a_forbidden_phrase_as_a_violation():
@@ -466,8 +501,8 @@ def test_closest_line_shows_what_the_digest_said_instead():
     digest = Digest("t", "Class allocation for next year is ready.",
                     [Topic(heading="Holidays", actions=[], bring=[], notes=["Summer break"])])
 
-    assert "Class allocation" in closest_line("class division", digest)
-    assert closest_line("unrelated wording entirely", digest) == ""
+    assert "Class allocation" in closest_line("class division", digest, PLAIN_CASE)
+    assert closest_line("unrelated wording entirely", digest, PLAIN_CASE) == ""
 
 
 def test_evaluate_product_case_reports_the_nearest_line_for_a_miss():

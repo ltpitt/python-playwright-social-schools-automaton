@@ -1,6 +1,4 @@
-# Social Schools Automaton - GitHub Copilot Instructions
-
-Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
+# Social Schools Automaton — working notes
 
 ## NEVER COMMIT PERSONAL DATA
 
@@ -11,204 +9,87 @@ Personal data here means anything identifying a real person or flowing from the 
 - Credentials of any kind: passwords, Pushbullet tokens, Gmail app passwords, LLM API keys
 - Real email addresses, and the names of children, parents, teachers or classes/groups
 - **Scraped Social Schools content** — article bodies, titles, attachments, digests, notification text. Real posts routinely name children, teachers and class compositions, so treat every scraped byte as personal data
-- Runtime artifacts derived from the above: `run_report.txt`, `full_prompt.txt`, `loop_output.md`, `processed_articles.json`, corpus/eval snapshots
+- Anything derived from the above: run reports, event logs, corpus and evaluation snapshots, expectations, goal-loop candidates
 
 Rules:
 
-1. Keep scraped content and secrets **outside the working tree** (use `$TMPDIR`), or gitignored. Prefer outside — a gitignore entry is one `git add -f` away from a leak.
-2. **Never** `git add -A`/`git add .` in this repo. Stage files explicitly by name.
+1. Everything of that kind lives under **`var/`**, which is gitignored in one line. Nothing personal belongs anywhere else in the tree.
+2. **Never** `git add -A` / `git add .` in this repo. Stage files explicitly by name.
 3. Tests, fixtures and examples use **invented** data only (`test@example.com`, "Test Article"). Never paste a real post into a test.
 4. Before committing, verify staged content: `git diff --cached`.
 5. If personal data does get committed, rewriting history is not enough for a pushed public repo — **rotate the exposed credentials** and tell the user immediately.
 
-## About the Project
-Social Schools Automaton is a Python automation script that uses Playwright for web scraping. It automates downloading, translating, and notifying about new content from the Social Schools website. The script:
-- Logs into Social Schools using provided credentials
-- Scrapes articles and checks for new content
-- Downloads PDFs and Word documents automatically
-- Translates content using Google Translator
-- Sends notifications via Pushbullet when new content is found
+## What this is
 
-## Working Effectively
+A Python program that logs into Social Schools, finds new posts and their PDF/Word attachments, and delivers a short parent-actionable brief by Pushbullet and/or email.
 
-### Bootstrap and Setup
-Run these commands in sequence to set up the development environment:
+Two first-class modes (see `CONTEXT.md`):
+
+- **Digest** (default) — an LLM turns the post into a structured brief
+- **Translation** (`DIGEST_ENABLED = false`) — Google Translate delivers the post directly, no LLM anywhere in the path
+
+## Layout
+
+```
+socialschools/          The application
+  __main__.py           CLI entry: python -m socialschools
+  paths.py              Every file location, all under var/
+  config.py             Config dataclass + cached get_config()
+  logging_setup.py      configure_logging() — explicit, never on import
+  console.py            Shared rich Console + theme + new_table()
+  events.py             Canonical wide events (ADR 0008) + ambient event registry
+  models.py             Article/Digest/Topic/Attachment/Recipient. Data only
+  state.py              Which articles have already been delivered
+  translate.py          Google Translate, cached
+  pipeline.py           The run: log in, walk the feed, see each Article through
+  scraping/             browser.py login.py feed.py attachments.py
+  digest/               prompt.py+prompt.txt schema.py hints.py parse.py render.py generate.py
+  llm/                  base.py copilot.py openai_compatible.py provider.py
+  delivery/             recipients.py pushbullet.py gmail.py notify.py admin.py
+
+tools/                  Dev-only harness, never shipped, run as python -m tools.X
+  build_corpus.py       Snapshot real posts into var/corpus/
+  run_digest.py         Replay the corpus through the real digest flow
+  evaluate_digests.py   Score the product; structural + recall + faithfulness
+  judge.py              Second opinion on a recall miss (ADR 0007)
+  bakeoff.py            Compare models on quality vs real cost (ADR 0005)
+  goal.py               Self-correcting prompt loop (ADR 0006)
+  check_events.py       Did the last run get worse than the ones before it?
+
+tests/                  conftest.py + one file per seam
+docs/adr/               Architecture decision records
+var/                    GITIGNORED. config.ini, state, logs, corpus, eval, goal
+```
+
+## Working effectively
 
 ```bash
-# Install Python dependencies - takes 45 seconds on first run, 1-3 seconds when cached
-pip install -r requirements.txt
-
-# Create configuration file from template
-cp config.example.ini config.ini
-# Edit config.ini with your credentials (see Configuration section below)
+make install-dev          # runtime + dev dependencies
+cp config.example.ini var/config.ini   # then fill in credentials
+make check                # lint + 312 tests + import sanity — the CI gate
+make run                  # ARGS='--force -v' to pass flags through
 ```
 
-**CRITICAL PLAYWRIGHT SETUP**: The standard `playwright install` fails due to browser download issues. The application is configured to use the system browser at `/usr/bin/chromium-browser` via the `executable_path` parameter in the code.
+Use `./.venv/bin/python` locally; the system Python lacks the dependencies.
 
-### Configuration Requirements
-**CRITICAL**: The application requires real credentials to function. Edit `config.ini`:
+`make check` is the gate and must stay green. Everything under `socialschools/`, `tools/` and `tests/` is linted, errors fatal and style advisory.
 
-```ini
-[DEFAULT]
-SCRAPED_WEBSITE_USER = your.email@socialschools.com    # Your Social Schools login
-SCRAPED_WEBSITE_PASSWORD = your_password               # Your Social Schools password  
-PUSHBULLET_API_KEYS = You:your_pushbullet_api_key      # Comma-separated 'name:token' pairs, one per recipient
-TRANSLATION_LANGUAGE = en                              # "en" for English, "it" for Italian, etc.
-```
+### Facts worth knowing
 
-**NEVER** commit real credentials to the repository. Keep `config.ini` in `.gitignore`.
+- **Playwright browsers are not installed.** `scraping/browser.py` resolves a system Chromium and falls back to Playwright's own. Nothing in the test suite drives a real browser.
+- **`SOCIALSCHOOLS_VAR`** relocates the whole `var/` tree. `tests/conftest.py` uses it to sandbox the suite; nothing in the tests touches real data.
+- **Logging is configured explicitly**, by `configure_logging()` in the entry point. Importing a module never opens a file handle.
+- **The run report always gets DEBUG**, whatever `-v`/`-q`/`LOG_LEVEL` say. Quietening the terminal must never cost you evidence.
+- **`--force` bypasses the seen-check for every article**, not just the newest — it notifies all recipients per article.
+- **`digest/prompt.txt` is data, not code**, and `goal.py` rewrites it unattended. Never inline it back into a module (ADR 0006).
+- Prompt placeholders are `<<LANGUAGE>>`, filled by `render_prompt()`, **not** `str.format` — the template is mostly JSON (ADR 0006).
+- **Any non-digest LLM call must force `LLM_STRUCTURED_OUTPUT=False`**, or the provider pins the answer to `DIGEST_JSON_SCHEMA` and returns a digest-shaped stub. This has bitten twice.
+- **Never log human text to the `"events"` logger** — it owns the JSONL and a prose line corrupts it. The narration logger is `"canonical"`.
+- Escape scraped text with `rich.markup.escape` before printing it.
+- `make bakeoff` and `make goal` **cost real money** and are never part of `make check`.
 
-### Build and Test Commands
+## Adding a feature
 
-```bash
-# NEVER CANCEL: Lint the code - completes in <1 second
-flake8 get_social_schools_news.py --count --select=E9,F63,F7,F82 --show-source --statistics
-flake8 get_social_schools_news.py --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
-# NEVER CANCEL: Run all tests - completes in <1 second, timeout 30 seconds
-pytest -v
-
-# Test script imports correctly
-python -c "import get_social_schools_news; print('Script imports successfully')"
-```
-
-### Running the Application
-
-```bash
-# Run the main script (requires valid credentials in config.ini)
-# No special environment variables needed - system browser is used automatically
-python get_social_schools_news.py
-```
-
-## Validation
-
-### Pre-Commit Validation Steps
-ALWAYS run these before committing changes:
-
-1. **Lint the code**: `flake8 get_social_schools_news.py --count --select=E9,F63,F7,F82 --show-source --statistics`
-2. **Run full test suite**: `pytest -v` 
-3. **Test script import**: `python -c "import get_social_schools_news; print('Script imports successfully')"`
-
-### Manual Testing Scenarios
-Since the application requires real credentials for Social Schools, full end-to-end testing should validate:
-
-1. **Configuration loading**: Script can read config.ini without errors
-2. **Playwright setup**: Browser launches with system browser automatically
-3. **Import validation**: All dependencies import correctly
-4. **Component testing**: Use the test suite to validate individual functions
-
-**Testing Playwright functionality**:
-```python
-# Create test script to validate Playwright works
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as playwright:
-    browser = playwright.chromium.launch(
-        headless=True, 
-        executable_path='/usr/bin/chromium-browser'
-    )
-    page = browser.new_page()
-    page.goto("data:text/html,<h1>Test</h1>")
-    print(page.text_content('h1'))  # Should print "Test"
-    browser.close()
-```
-
-**DO NOT** run the full script without proper Social Schools credentials as it will fail at login.
-
-### Known Working Test Commands
-The test suite covers all major components and runs successfully:
-- `test_load_processed_articles` - JSON file handling
-- `test_save_processed_article` - Article tracking 
-- `test_translate` - Google Translator integration
-- `test_send_notification` - Pushbullet notifications
-- `test_process_article_content` - Content processing pipeline
-
-## Important Technical Details
-
-### Playwright Browser Issue
-**CRITICAL ISSUE**: `playwright install` fails due to browser download problems. 
-
-**SOLUTION**: The application has been updated to use the system Chromium browser at `/usr/bin/chromium-browser` via the `executable_path` parameter in the `run()` function. No manual setup or environment variables needed.
-
-### Dependencies and Timing
-- **Python**: Requires 3.10+ (tested on 3.10, 3.11, 3.12.3)
-- **pip install**: ~45 seconds first time, ~1-3 seconds when packages cached. NEVER CANCEL - timeout 120 seconds
-- **pytest**: All 11 tests complete in <1 second. NEVER CANCEL - timeout 30 seconds  
-- **flake8**: Linting completes in <1 second. NEVER CANCEL - timeout 30 seconds
-
-### Code Quality Issues
-The current codebase has some flake8 violations that should be addressed:
-- Unused imports (typing.Optional, shutil)
-- Line length violations (>127 characters)
-- Whitespace and blank line formatting issues
-- Unused variables
-
-Always run both flake8 commands to catch these issues.
-
-## Common Development Tasks
-
-### Adding New Features
-1. Write tests first in `test_get_social_schools_news.py`
-2. Implement feature in `get_social_schools_news.py`
-3. Run `pytest -v` to validate tests pass
-4. Run `flake8` to check code style
-5. Test import: `python -c "import get_social_schools_news"`
-
-### Debugging Issues
-1. Check configuration file exists and has valid format
-2. Verify Playwright environment variable is set
-3. Run individual test functions to isolate problems
-4. Check that all dependencies are installed
-
-### CI Pipeline Expectations
-The GitHub Actions CI pipeline runs:
-1. Python 3.10 and 3.11 matrix
-2. `pip install -r requirements.txt`
-3. `playwright install` (fails but CI handles it)
-4. `flake8` linting (expects no E9,F63,F7,F82 errors)
-5. `pytest` tests (expects all 11 tests to pass)
-
-## File Structure Reference
-
-### Repository Root
-```
-.
-├── .github/
-│   ├── workflows/
-│   │   ├── CI.yml              # GitHub Actions pipeline
-│   │   └── CodeQL.yml          # Security scanning
-│   └── copilot-instructions.md # This file
-├── .gitignore                  # Standard Python gitignore
-├── LICENSE                     # MIT license
-├── README.md                   # User documentation  
-├── config.example.ini          # Configuration template
-├── config.ini                  # Your credentials (git-ignored)
-├── get_social_schools_news.py  # Main application script
-├── requirements.txt            # Python dependencies
-└── test_get_social_schools_news.py # Test suite
-```
-
-### Key Files to Know
-- **`get_social_schools_news.py`**: Main script - contains all automation logic
-- **`test_get_social_schools_news.py`**: Comprehensive test suite with 11 tests
-- **`requirements.txt`**: All Python dependencies with pinned versions
-- **`config.example.ini`**: Template for configuration (copy to config.ini)
-- **`.github/workflows/CI.yml`**: CI pipeline that runs on every push/PR
-
-## Troubleshooting
-
-### Common Issues
-1. **"Executable doesn't exist at .../headless_shell"**: This is expected - the application uses system browser automatically
-2. **"No module named 'config'"**: Create `config.ini` from `config.example.ini`
-3. **Login failures**: Verify credentials in config.ini are correct
-4. **Import errors**: Run `pip install -r requirements.txt`
-5. **Test failures**: Check that config.ini exists (tests mock it automatically)
-
-### Emergency Reset
-If the environment gets corrupted:
-```bash
-rm -rf __pycache__ .pytest_cache
-pip uninstall -y -r requirements.txt
-pip install -r requirements.txt
-# No special Playwright setup needed - system browser is used automatically
-```
+1. Write the test first, in the `tests/` file that matches the seam
+2. Implement in the smallest module that can own it
+3. `make check`

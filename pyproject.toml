@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The package and the dev-only harness are both imported from the repository
+# root, which is not on sys.path when pytest is invoked from elsewhere.
+pythonpath = ["."]
+filterwarnings = ["error::DeprecationWarning:socialschools.*"]

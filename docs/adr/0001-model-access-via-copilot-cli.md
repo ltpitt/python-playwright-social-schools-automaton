@@ -8,3 +8,5 @@ The pipeline turns raw Article/Attachment text into a Digest by shelling out to 
 - Article text (school/child content) leaves the local network to GitHub's Copilot backend. The user has accepted cloud inference.
 - Consumes the Copilot plan's premium-request budget; fine at current low volume, would need revisiting at high volume.
 - Access is placed behind a single interface (`_run_copilot`) so a local backend (e.g. Ollama on an ≥8 GB box) can be added later as a config switch, not a rewrite.
+
+**Update (2026-08-25):** the `loop.sh` development tool mentioned above was retired. It asked a model to read the whole source file and suggest improvements; `tools/goal.py` (ADR 0006) does something narrower and measurable instead, so `loop.sh` was deleted rather than maintained. The `_run_copilot` seam anticipated here duly became `socialschools.llm.copilot.run_copilot`, one provider among several (ADR 0004).

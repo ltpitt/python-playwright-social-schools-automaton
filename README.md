@@ -31,7 +31,6 @@ When `DIGEST_ENABLED = true`, pick a backend with `LLM_PROVIDER`:
 | `openai_compatible` | **OpenRouter** / other cloud provider | Pay per use; content goes to that provider | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` |
 
 The `openai_compatible` provider works with any OpenAI-compatible `/chat/completions` endpoint (Ollama, OpenRouter, LM Studio, and most cloud providers), so one setting covers local, self-hosted, and cloud. See `config.example.ini` for ready-to-copy examples. Whichever backend you choose, the model is used as a pure text transformer with no tool access (see `docs/adr/0004-pluggable-llm-providers.md`).
-
 ### Is the cheap model good enough?
 
 Don't guess — measure. `make bakeoff MODELS='model-a model-b@medium'` replays the same local corpus through each candidate, scores every digest the same way, and prints quality against the money actually charged:
@@ -88,7 +87,7 @@ turn    tune    holdout score   cost_usd        sha     note
 1       15/16   4/4     0.945   0.0790          1c93aa07be41
 ```
 
-The loop writes exactly one file — `digest_prompt.txt` — and it is plain text, not code. It cannot reach the scraper, the delivery path, or the expectations that judge it, so it cannot pass by moving the goalposts, and a prompt rewritten under the influence of a poisoned attachment still cannot execute. Nothing is committed: review the diff, or `git checkout digest_prompt.txt` to throw the run away. Reasoning: `docs/adr/0006-self-correcting-loop-writes-one-inert-file.md`.
+The loop writes exactly one file — `socialschools/digest/prompt.txt` — and it is plain text, not code. It cannot reach the scraper, the delivery path, or the expectations that judge it, so it cannot pass by moving the goalposts, and a prompt rewritten under the influence of a poisoned attachment still cannot execute. Nothing is committed: review the diff, or `git checkout socialschools/digest/prompt.txt` to throw the run away. Reasoning: `docs/adr/0006-self-correcting-loop-writes-one-inert-file.md`.
 
 ## Notify multiple people
 
@@ -155,7 +154,7 @@ ADMIN_EMAIL = admin@example.com
 
 ### When is an article marked as processed?
 
-An article is recorded in `processed_articles.json` **only when it was fully processed and every notification was delivered**. If the digest fails, a notification fails to send, or the article body can't be read, the article stays unmarked and is retried on the next run.
+An article is recorded in `var/state/processed_articles.json` **only when it was fully processed and every notification was delivered**. If the digest fails, a notification fails to send, or the article body can't be read, the article stays unmarked and is retried on the next run.
 
 Two degraded-but-delivered cases still count as processed, because the notification did reach parents (and it tells them something was missing) — re-sending it every run would just be spam:
 
@@ -184,7 +183,7 @@ Now, we can all sit back, relax, and let this script connect to the school websi
 
 ## Prerequisites
 
-- Python 3.x
+- Python 3.10 or newer
 - Playwright (for web automation)
 - PyMuPDF (for PDF handling)
 - python-docx (for Word document handling)
@@ -196,14 +195,14 @@ Now, we can all sit back, relax, and let this script connect to the school websi
 1. Clone this repo locally.
 2. Install the required packages:
     ```bash
-    pip install -r requirements.txt
+    make install          # or: pip install -r requirements.txt
     ```
 3. Set up your configuration:
-   - Copy the example configuration file:
+   - Copy the example configuration file into the ignored `var/` directory:
      ```bash
-     cp config.example.ini config.ini
+     mkdir -p var && cp config.example.ini var/config.ini
      ```
-   - Open `config.ini` in your favorite text editor
+   - Open `var/config.ini` in your favorite text editor
    - Fill in your details:
      ```ini
      [DEFAULT]
@@ -220,24 +219,38 @@ Now, we can all sit back, relax, and let this script connect to the school websi
      ```
    - Save the file
 
-4. Run the script:
+4. Run it:
     ```bash
-    python get_social_schools_news.py
+    python -m socialschools     # or: make run
     ```
 
-   Add `-v` for debug detail on screen, or `-q` for warnings and errors only. `LOG_LEVEL=DEBUG` does the same for cron and the `make` targets. Whatever you choose, `run_report.txt` always gets the full debug log — quietening the terminal never costs you evidence. Colour switches itself off when output is piped or `NO_COLOR` is set.
+   Add `-v` for debug detail on screen, or `-q` for warnings and errors only. `LOG_LEVEL=DEBUG` does the same for cron and the `make` targets. Whatever you choose, `var/logs/run_report.txt` always gets the full debug log — quietening the terminal never costs you evidence. Colour switches itself off when output is piped or `NO_COLOR` is set.
+
+### Where everything is written
+
+Everything the program produces — your credentials, the state file, logs, events, and every evaluation artefact — lives under a single gitignored `var/` directory:
+
+```
+var/
+  config.ini              your credentials
+  state/                  which articles have already been delivered
+  logs/                   run_report.txt, events.jsonl
+  corpus/ eval/ goal/     development harness output
+```
+
+One ignored directory rather than a dozen ignored files means nothing personal ever sits beside a file you might casually `git add`. Set `SOCIALSCHOOLS_VAR` to put that tree somewhere else entirely.
 
 ## Running it on a schedule
 
-The script checks for new content once per run, so schedule it (e.g. hourly) with cron. Since `config.ini` and `processed_articles.json` are read relative to the current directory, `cd` into the repo before invoking the venv's Python:
+The script checks for new content once per run, so schedule it (e.g. hourly) with cron. Paths are resolved relative to the repository, so `cd` into it before invoking the venv's Python:
 
 ```cron
-0 * * * * cd "/path/to/python-playwright-social-schools-automaton" && "/path/to/python-playwright-social-schools-automaton/.venv/bin/python" "/path/to/python-playwright-social-schools-automaton/get_social_schools_news.py" >> "/path/to/python-playwright-social-schools-automaton/cron.log" 2>&1
+0 * * * * cd "/path/to/python-playwright-social-schools-automaton" && "/path/to/python-playwright-social-schools-automaton/.venv/bin/python" -m socialschools >> "/path/to/python-playwright-social-schools-automaton/var/logs/cron.log" 2>&1
 ```
 
 ## Important notes
 
-- Keep your `config.ini` file safe and never share it with others
+- Keep your `var/config.ini` file safe and never share it with others
 - The script will remember which articles it has already processed, but only once they are fully processed and notified — see [Admin alerts](#admin-alerts)
 - You'll get notifications on your phone through Pushbullet when new content is available
 - Both PDFs and Word documents are supported and will be processed automatically

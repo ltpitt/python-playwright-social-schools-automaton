@@ -24,7 +24,11 @@ def test_generate_digest_prompt_instructs_attachment_source_reference(mock_confi
 
 
 def test_generate_digest_prompt_demands_topic_grouping(mock_config):
-    """The prompt must ask for topic grouping, a separate bring list, and no invented dates"""
+    """The prompt must ask for topic grouping, a separate bring list, and no invented dates
+
+    These assertions are the reason goal.py cannot quietly drop a rule: a turn
+    that deletes one fails the suite and a human has to agree to the loss.
+    """
     with patch('subprocess.run', return_value=_valid_cli_result()) as mock_run:
         generate_digest("Title", "Body", [])
 
@@ -35,7 +39,7 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "Order topics by urgency" in prompt
         assert "which group or class" in prompt
         assert "date not specified" in prompt
-        assert "Purchase the" in prompt
+        assert "Do not repeat items listed in 'bring' within 'actions'" in prompt
         assert "24-hour HH:MM" in prompt
         assert "Never use" in prompt and "AM/PM" in prompt
         assert "at most ONE entry per real-world event" in prompt

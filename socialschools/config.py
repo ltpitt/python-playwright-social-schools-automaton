@@ -52,7 +52,10 @@ class Config:
     LLM_BASE_URL: str = ""
     LLM_MODEL: str = ""
     LLM_API_KEY: str = ""
-    LLM_TIMEOUT: int = 120
+    # Generous, because a reasoning model spends its thinking time before the
+    # first token: some publish a time-to-first-token beyond the old 120s
+    # default, which arrived as a connection failure rather than a slow answer.
+    LLM_TIMEOUT: int = 300
     # Extra thinking budget for models that support it ("low"/"medium"/"high").
     # Empty means don't ask for any, which is what non-reasoning models need.
     LLM_REASONING_EFFORT: str = ""
@@ -86,7 +89,7 @@ def load_config() -> Config:
         LLM_BASE_URL=section.get('LLM_BASE_URL', '').strip(),
         LLM_MODEL=section.get('LLM_MODEL', '').strip(),
         LLM_API_KEY=section.get('LLM_API_KEY', '').strip(),
-        LLM_TIMEOUT=int(section.get('LLM_TIMEOUT', '120').strip() or '120'),
+        LLM_TIMEOUT=int(section.get('LLM_TIMEOUT', '300').strip() or '300'),
         LLM_REASONING_EFFORT=section.get('LLM_REASONING_EFFORT', '').strip().lower(),
         LLM_STRUCTURED_OUTPUT=section.get(
             'LLM_STRUCTURED_OUTPUT', 'true').strip().lower() == 'true',

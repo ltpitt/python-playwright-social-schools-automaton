@@ -47,7 +47,8 @@ def test_archive_product_names_the_copy_by_prompt_and_model(tmp_path):
     path = archive_product(_result(), directory=str(tmp_path))
     name = os.path.basename(path)
     assert "abc12345" in name and "test-model" in name
-    assert json.load(open(path))["prompt_sha"] == "abc12345"
+    with open(path) as f:
+        assert json.load(f)["prompt_sha"] == "abc12345"
 
 
 def test_archive_product_keeps_only_the_most_recent(tmp_path):

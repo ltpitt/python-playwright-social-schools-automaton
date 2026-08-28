@@ -624,7 +624,7 @@ def quality_score(result):
 
 
 def is_saturated(summary):
-    """Whether the gate has stopped discriminating, leaving only the score to."""
+    """Whether the gate has stopped discriminating, leaving only the score to separate variants."""
     overall = summary["splits"]["all"]
     return bool(overall["cases"]) and overall["passed"] == overall["cases"]
 

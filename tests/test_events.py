@@ -26,6 +26,7 @@ def events_to_tmp(tmp_path, monkeypatch):
     logger = logging.getLogger("events")
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
+    logger.propagate = True
     yield path
     for handler in list(logger.handlers):
         handler.close()

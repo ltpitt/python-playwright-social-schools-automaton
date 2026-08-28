@@ -23,8 +23,8 @@ def send_email(title, body, sender, app_password, recipients):
     logger.debug(f"Notification body:\n{body}")
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
         server.login(sender, app_password)
-        for name, address in recipients.items():
-            logger.debug(f"Emailing notification to recipient '{name}' <{address}>")
+        logger.debug(f"Sending email to {len(recipients)} configured recipient(s)")
+        for _, address in recipients.items():
             message = EmailMessage()
             message["Subject"] = title
             message["From"] = sender

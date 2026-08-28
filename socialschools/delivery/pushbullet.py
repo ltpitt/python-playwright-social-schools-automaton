@@ -19,8 +19,8 @@ def send_pushbullet(title, body, api_keys):
     logger.info(f"Sending Pushbullet notification with title: {title}")
     logger.debug(f"Notification body:\n{body}")
     params = {"type": "note", "title": title, "body": body}
-    for name, key in api_keys.items():
-        logger.debug(f"Pushing notification to recipient '{name}'")
+    logger.debug(f"Pushing notification to {len(api_keys)} configured recipient(s)")
+    for _, key in api_keys.items():
         response = requests.post(
             PUSHES_URL,
             data=json.dumps(params),

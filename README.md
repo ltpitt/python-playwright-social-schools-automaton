@@ -9,6 +9,164 @@
 # Social Schools Automaton
 > A Python script to automate downloading, translating, and notifying about new content from the social school website!
 
+## Notification modes
+
+The tool supports two modes, both treated as first-class:
+
+| Mode | Config | What you get | Requirements |
+|---|---|---|---|
+| **Digest** (default) | `DIGEST_ENABLED = true` | Structured brief: TL;DR, action items, key dates, attachment link | An LLM backend (see below) |
+| **Translation** | `DIGEST_ENABLED = false` | Google-translated article title + body | None beyond Python deps |
+
+Set `DIGEST_ENABLED = false` in `config.ini` if you don't have an LLM backend or prefer a simpler, cost-free setup. You'll still get every article translated and delivered to your phone. In Translation mode no LLM machinery is loaded at all.
+
+### Choosing an LLM backend (Digest mode)
+
+When `DIGEST_ENABLED = true`, pick a backend with `LLM_PROVIDER`:
+
+| `LLM_PROVIDER` | Backend | Cost / privacy | Config needed |
+|---|---|---|---|
+| `copilot` (default) | GitHub Copilot CLI | Uses your Copilot plan; content goes to GitHub | Copilot CLI installed & authenticated |
+| `openai_compatible` | Local **Ollama** (`http://localhost:11434/v1`) | **Free & fully local** — content never leaves your network | `LLM_BASE_URL`, `LLM_MODEL` |
+| `openai_compatible` | **OpenRouter** / other cloud provider | Pay per use; content goes to that provider | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` |
+
+The `openai_compatible` provider works with any OpenAI-compatible `/chat/completions` endpoint (Ollama, OpenRouter, LM Studio, and most cloud providers), so one setting covers local, self-hosted, and cloud. See `config.example.ini` for ready-to-copy examples. Whichever backend you choose, the model is used as a pure text transformer with no tool access (see `docs/adr/0004-pluggable-llm-providers.md`).
+### Is the cheap model good enough?
+
+Don't guess — measure. `make bakeoff MODELS='model-a model-b@medium'` replays the same local corpus through each candidate, scores every digest the same way, and prints quality against the money actually charged:
+
+```
+variant                             holdout     tune  score  recall  viol  warn  unstable      cost  sec/case
+google/gemini-2.5-flash               4/4      16/16   0.89    100%     0    40         0   $0.0790       2.4
+google/gemini-2.5-flash@medium        4/4      16/16   0.96    100%     0    16         0   $0.1900       5.1
+```
+
+A candidate is `model` or `model@reasoning_effort`, so raising the thinking budget on a cheap model competes head-to-head with buying a bigger one — usually the cheaper upgrade. Judge on the **holdout** column: those cases were held back from prompt tuning, so they are the ones that say whether a change generalises.
+
+Once every case passes, pass/fail can no longer rank anything, so ranking falls to **score** — recall, minus 0.5 per violation and 0.05 per warning. A gap under 0.02 on a corpus this small is noise. `make bakeoff` costs real money (every case is regenerated for every candidate) and is never part of `make check`. Method and its limits: `docs/adr/0005-model-selection-by-bakeoff.md`.
+
+### Judging a phrase the matcher couldn't find
+
+Recall expectations are literal strings. That is right for `08:30` or `01 Sep`, which the model copies, and hopeless for a translated noun — a digest saying "raincoat" fails an expectation written "rain jacket", and "groups 3 and 4" fails one written "group 3".
+
+So a phrase that isn't found gets one appeal: a model is asked whether the digest conveys it in other words, and may overturn the miss. The rescue is printed in the case table so you can see every call it made.
+
+It's built so a bad judge can't hurt you. It only ever sees phrases that **already failed**, and a verdict can only turn a miss into a hit — so it can never fail a case that string matching passed. It isn't called at all when everything matches, verdicts are cached per `(model, digest, phrase)` so re-runs are free and repeatable, and any error means no rescues rather than a free pass. `make eval NOJUDGE=1` turns it off for a fully offline, deterministic run. Reasoning: `docs/adr/0007-a-missed-phrase-gets-one-appeal.md`.
+
+### Knowing when it quietly got worse
+
+Every run and every article writes one wide structured line to `events.jsonl` — what code was running, what model, how the digest came out, what it cost, whether it worked:
+
+```json
+{"event":"article","run_id":"a1b2c3d4","ts":"2026-08-25T07:14:09Z","outcome":"ok",
+ "article_id":"post_123","body_chars":1840,"attachments":1,"attachments_failed":0,
+ "topics":2,"actions":3,"bring":4,"tldr_chars":88,"notification_chars":612,
+ "has_post_date":true,"has_footer":true,"llm_cost_usd":0.0041,"duration_ms":4820}
+```
+
+`make health` reads those back and compares the latest run against the ones before it:
+
+```
+ severity     what         detail
+ ──────────────────────────────────────────────────────────────────────────
+ regression   has_footer   true in 100% of 10 earlier article(s), false in 1/1 now
+ info         prompt_sha   8240b36f -> c44474ab
+```
+
+It reports what got worse *and* what changed about the run — commit, model, prompt hash, uncommitted changes — because the second column is usually the reason for the first. It runs as part of `make eval-cycle`, costs nothing, and calls no model.
+
+This exists because a deterministic line of the notification template stopped appearing and nothing could say when. Events record the **shape** of what was produced — counts, lengths, flags — never the text, so they can be kept for months without becoming a store of personal data. The text stays in the rotated debug log, joined by `run_id`. Reasoning: `docs/adr/0008-one-wide-event-per-unit-of-work.md`.
+
+### Let it fix its own prompt
+
+`make goal TURNS=5` runs the evaluator in a loop: regenerate the corpus, score it, hand the failing cases back to the model, take its rewritten prompt, measure again. It stops when every holdout case passes, when the turns run out, or when two turns in a row fail to beat the best result — and it restores the **best** turn, not the last one.
+
+```
+turn    tune    holdout score   cost_usd        sha     note
+0       14/16   3/4     0.910   0.0790          8240b36fd835
+1       15/16   4/4     0.945   0.0790          1c93aa07be41
+```
+
+The loop writes exactly one file — `socialschools/digest/prompt.txt` — and it is plain text, not code. It cannot reach the scraper, the delivery path, or the expectations that judge it, so it cannot pass by moving the goalposts, and a prompt rewritten under the influence of a poisoned attachment still cannot execute. Nothing is committed: review the diff, or `git checkout socialschools/digest/prompt.txt` to throw the run away. Reasoning: `docs/adr/0006-self-correcting-loop-writes-one-inert-file.md`.
+
+## Notify multiple people
+
+Notifications are sent individually to each entry in `PUSHBULLET_API_KEYS`, a comma-separated list of `name:token` pairs — one per recipient, each using their own private Pushbullet access token:
+
+1. Each recipient creates their own free [Pushbullet](https://www.pushbullet.com/) account (or uses their existing one) and installs the app on their phone.
+2. Each recipient generates their own access token at [pushbullet.com/#settings/account](https://www.pushbullet.com/#settings/account).
+3. Set `PUSHBULLET_API_KEYS` in `config.ini` (the name is only used in logs, so you can tell who a push went to):
+   ```ini
+   PUSHBULLET_API_KEYS = You:your_token_here,Partner:partners_token_here,Grandma:another_persons_token_here
+   ```
+4. The script pushes the same notification individually to every entry. Nobody needs access to anyone else's token, and only the people you explicitly list ever receive anything.
+
+A single entry (e.g. `PUSHBULLET_API_KEYS = You:your_token_here`) keeps the original single-recipient behavior.
+
+### Per-recipient language
+
+Each recipient can receive notifications in their own language by appending `:language` to their entry:
+
+```ini
+PUSHBULLET_API_KEYS = Davide:davides_token:it,Daniela:danielas_token:en
+```
+
+A recipient without a `:language` suffix falls back to `TRANSLATION_LANGUAGE`. This works the same way for `EMAIL_RECIPIENTS` (see below). Content is generated **once per distinct language actually requested** — never per recipient — and shared by everyone who asked for that language, so nothing is translated (or summarized, in Digest mode) more than necessary.
+
+> We deliberately don't use Pushbullet **channels** for this: channel subscriptions require no approval from the owner, and the `channel-info` API is publicly queryable without authentication — anyone who learns the channel tag can read/subscribe to notifications. Since these notifications can include your child's name, school, and schedule, per-recipient private tokens are the safer choice.
+
+## Notify by email (Gmail)
+
+Not everyone uses Pushbullet, so notifications can also (or instead) be sent by **email** via Gmail. Pushbullet and email are independent: configure either one, or both.
+
+- Leave `PUSHBULLET_API_KEYS` empty to skip Pushbullet.
+- Leave `EMAIL_RECIPIENTS` empty to skip email.
+
+To enable email, set these in `config.ini`:
+
+```ini
+EMAIL_SENDER = your_gmail_address@gmail.com
+EMAIL_APP_PASSWORD = your_gmail_app_password
+EMAIL_RECIPIENTS = You:you@example.com,Partner:partner@example.com
+```
+
+- `EMAIL_SENDER` is the Gmail address the notifications are sent **from**.
+- `EMAIL_APP_PASSWORD` is a Gmail **App Password**, *not* your normal Google password. Enable [2-Step Verification](https://myaccount.google.com/security), then create one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+- `EMAIL_RECIPIENTS` mirrors `PUSHBULLET_API_KEYS`: a comma-separated list of `name:email` pairs (the name is only used in logs). Each recipient is emailed individually, so their address is never exposed to the others. A single entry works too.
+- Like `PUSHBULLET_API_KEYS`, each entry accepts an optional `:language` suffix (e.g. `You:you@example.com:it`) to override `TRANSLATION_LANGUAGE` for that recipient — see [Per-recipient language](#per-recipient-language) above.
+
+Sending assumes Gmail's SMTP server (`smtp.gmail.com`).
+
+## Admin alerts
+
+Parents only ever see the good stuff. Everything that goes *wrong* — a failed login, an article whose body can't be read, an attachment that won't download, a degraded digest, a broken state file, a fatal crash — is sent to a separate **admin channel** so you can spot problems without reading the logs.
+
+Both settings are optional and independent; leave both empty to disable admin alerting.
+
+```ini
+ADMIN_PUSHBULLET_API_KEY = o.your_admin_pushbullet_token
+ADMIN_EMAIL = admin@example.com
+```
+
+- `ADMIN_PUSHBULLET_API_KEY` is a single Pushbullet access token (no `name:` prefix).
+- `ADMIN_EMAIL` is a single address, delivered using the `EMAIL_SENDER` / `EMAIL_APP_PASSWORD` credentials above.
+- Admin delivery is best-effort: if the admin channel itself is down, the run continues and the failure is only logged.
+
+### When is an article marked as processed?
+
+An article is recorded in `var/state/processed_articles.json` **only when it was fully processed and every notification was delivered**. If the digest fails, a notification fails to send, or the article body can't be read, the article stays unmarked and is retried on the next run.
+
+Two degraded-but-delivered cases still count as processed, because the notification did reach parents (and it tells them something was missing) — re-sending it every run would just be spam:
+
+- an attachment that could not be downloaded or read (the notification carries a "could not be read" warning)
+- a digest that fell back to placeholder text after the LLM returned invalid output twice
+
+Both still raise an admin alert.
+
+## Making the notifications better
+
+The quality of a Digest is measured, not argued about, and the measurement is only as good as the expectations behind it. [HOW-TO-IMPROVE.md](HOW-TO-IMPROVE.md) is the working guide: how to add a case, how to write an expectation, how to read the score, and — the part that took a day to learn — why a one-case improvement is noise rather than a result. It is written in Simplified Technical English and assumes no Python.
+
 ## Why this exists
 
 Hey there, awesome parents! 🎉
@@ -22,13 +180,13 @@ Now, we can all sit back, relax, and let this script connect to the school websi
 2. **Checks for new content** in the feed (both PDFs and Word documents).
 3. **Downloads any new files** (PDFs and Word documents).
 4. **Extracts text** from the files.
-5. **Translates the text** into your preferred language (default is Italian).
-6. **Sends Pushbullet notifications** with both the original and translated text.
-7. **Saves the content** in both original and translated formats.
+5. **Builds a Digest** (or a plain translation, see [Notification modes](#notification-modes) above) in your preferred language (default is English), including the post's original date and time.
+6. **Sends Pushbullet notifications** with the result.
+7. **Remembers which articles it has already processed**, so you never get duplicate notifications.
 
 ## Prerequisites
 
-- Python 3.x
+- Python 3.10 or newer
 - Playwright (for web automation)
 - PyMuPDF (for PDF handling)
 - python-docx (for Word document handling)
@@ -40,36 +198,65 @@ Now, we can all sit back, relax, and let this script connect to the school websi
 1. Clone this repo locally.
 2. Install the required packages:
     ```bash
-    pip install -r requirements.txt
+    make install          # or: pip install -r requirements.txt
     ```
 3. Set up your configuration:
-   - Copy the example configuration file:
+   - Copy the example configuration file into the ignored `var/` directory:
      ```bash
-     cp config.example.py config.py
+     mkdir -p var && cp config.example.ini var/config.ini
      ```
-   - Open `config.py` in your favorite text editor
+   - Open `var/config.ini` in your favorite text editor
    - Fill in your details:
-     ```python
-     SCRAPED_WEBSITE_USER = "your.email@example.com"  # Your Social Schools login email
-     SCRAPED_WEBSITE_PASSWORD = "your_password"       # Your Social Schools password
-     PUSHBULLET_API_KEY = "your_pushbullet_key"       # Get this from Pushbullet settings
-     TRANSLATION_LANGUAGE = "it"                      # Use "en" for English, "it" for Italian, etc.
+     ```ini
+     [DEFAULT]
+     SCRAPED_WEBSITE_USER = your.email@example.com   # Your Social Schools login email
+     SCRAPED_WEBSITE_PASSWORD = your_password        # Your Social Schools password
+     PUSHBULLET_API_KEYS = You:your_pushbullet_key   # Comma-separated 'name:token' pairs (leave empty to use email only)
+     EMAIL_SENDER =                                  # Gmail address to send from (optional, see "Notify by email")
+     EMAIL_APP_PASSWORD =                            # Gmail App Password (optional)
+     EMAIL_RECIPIENTS =                              # Comma-separated 'name:email' pairs (optional)
+     ADMIN_PUSHBULLET_API_KEY =                      # Admin-only token for error alerts (optional)
+     ADMIN_EMAIL =                                   # Admin-only address for error alerts (optional)
+     TRANSLATION_LANGUAGE = en                       # "en" for English, "it" for Italian, etc.
+     DIGEST_ENABLED = true                           # false for plain translation mode
      ```
    - Save the file
 
-4. Run the script:
+4. Run it:
     ```bash
-    python get_social_schools_news.py
+    python -m socialschools     # or: make run
     ```
+
+   Add `-v` for debug detail on screen, or `-q` for warnings and errors only. `LOG_LEVEL=DEBUG` does the same for cron and the `make` targets. Whatever you choose, `var/logs/run_report.txt` always gets the full debug log — quietening the terminal never costs you evidence. Colour switches itself off when output is piped or `NO_COLOR` is set.
+
+### Where everything is written
+
+Everything the program produces — your credentials, the state file, logs, events, and every evaluation artefact — lives under a single gitignored `var/` directory:
+
+```
+var/
+  config.ini              your credentials
+  state/                  which articles have already been delivered
+  logs/                   run_report.txt, events.jsonl
+  corpus/ eval/ goal/     development harness output
+```
+
+One ignored directory rather than a dozen ignored files means nothing personal ever sits beside a file you might casually `git add`. Set `SOCIALSCHOOLS_VAR` to put that tree somewhere else entirely.
+
+## Running it on a schedule
+
+The script checks for new content once per run, so schedule it (e.g. hourly) with cron. Paths are resolved relative to the repository, so `cd` into it before invoking the venv's Python:
+
+```cron
+0 * * * * cd "/path/to/python-playwright-social-schools-automaton" && "/path/to/python-playwright-social-schools-automaton/.venv/bin/python" -m socialschools >> "/path/to/python-playwright-social-schools-automaton/var/logs/cron.log" 2>&1
+```
 
 ## Important notes
 
-- Keep your `config.py` file safe and never share it with others
-- The script will remember which articles it has already processed
+- Keep your `var/config.ini` file safe and never share it with others
+- The script will remember which articles it has already processed, but only once they are fully processed and notified — see [Admin alerts](#admin-alerts)
 - You'll get notifications on your phone through Pushbullet when new content is available
-- The script will pause at certain points for you to check the content before proceeding
 - Both PDFs and Word documents are supported and will be processed automatically
-- All content is saved in both original and translated formats
 
 ## Meta
 

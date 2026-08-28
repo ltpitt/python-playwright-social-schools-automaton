@@ -1,9 +1,12 @@
-pycurl==7.45.6
-
-pymupdf==1.26.4
-playwright==1.54.0
+# Runtime dependencies only. Development tooling lives in requirements-dev.txt
+# so a Raspberry Pi never installs a test runner it will not use.
 deep-translator==1.11.4
+python-docx==1.2.0
+requests==2.33.0
+rich==15.0.0
+pycurl==7.45.7
+pytest-mock==3.15.1
+playwright==1.54.0
+pymupdf==1.26.7
 flake8==7.3.0
 pytest==8.4.1
-pytest-mock==3.15.1
-python-docx==1.2.0

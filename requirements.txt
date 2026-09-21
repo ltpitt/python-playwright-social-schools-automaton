@@ -6,4 +6,4 @@ pymupdf==1.28.2
 python-docx==1.2.0
 requests==2.34.2
 rich==15.0.0
-pycurl==7.47.0
+pycurl==7.48.0

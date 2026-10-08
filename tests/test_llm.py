@@ -181,7 +181,7 @@ def test_openai_compatible_asks_the_endpoint_to_enforce_the_schema():
     payload = json.loads(mock_post.call_args[1]["data"])
     schema = payload["response_format"]["json_schema"]["schema"]
     assert payload["response_format"]["type"] == "json_schema"
-    assert set(schema["required"]) == {"translated_title", "tldr", "topics"}
+    assert set(schema["required"]) == {"translated_title", "tldr", "topics", "encouragement"}
 
 
 def test_openai_compatible_retries_without_schema_when_rejected():

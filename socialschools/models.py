@@ -31,6 +31,7 @@ class Digest:
     translated_title: str
     tldr: str
     topics: list = field(default_factory=list)
+    encouragement: str = ""
 
 
 @dataclass

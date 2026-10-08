@@ -15,10 +15,11 @@ DIGEST_JSON_SCHEMA = {
     "schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["translated_title", "tldr", "topics"],
+        "required": ["translated_title", "tldr", "topics", "encouragement"],
         "properties": {
             "translated_title": {"type": "string"},
             "tldr": {"type": "string"},
+            "encouragement": {"type": "string"},
             "topics": {
                 "type": "array",
                 "items": {

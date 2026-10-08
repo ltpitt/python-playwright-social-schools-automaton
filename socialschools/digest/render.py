@@ -72,6 +72,9 @@ def render_digest_notification(data: Digest, failed_attachments=None,
             "\u26a0 An attachment could not be read \u2014 check the original post for complete info")
 
     if original_title:
+        encouragement = (data.encouragement or "").strip()
+        if encouragement:
+            sections.append(encouragement)
         sections.append(f"To find this post in Social Schools, look for: \"{original_title}\"")
 
     return "\n\n".join(sections)

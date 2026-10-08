@@ -6,6 +6,7 @@ Required structure:
 {
   "translated_title": "<article title in <<LANGUAGE>>>",
   "tldr": "<one sentence in <<LANGUAGE>> giving the substance: the soonest thing to do or know, with its date>",
+  "encouragement": "<one short, warm, genuine sentence in <<LANGUAGE>> encouraging the parent reading this - being a parent is hard, and they're doing a good job. Vary the wording each time, keep it brief (under 120 characters), and never mention the school message's content>",
   "topics": [
     {
       "heading": "<short subject of this part of the message, in <<LANGUAGE>>>",
@@ -32,6 +33,7 @@ Rules:
 - If an entry is based on information found in an attachment rather than the article body itself, append the source attachment's filename in parentheses at the end, e.g. 'DD Mon - what to do (see filename.pdf)'.
 - tldr must never be empty, and must state the substance rather than describe the message. A parent who reads only this line should already know the most important thing. Write 'School trip on 01 Sep: pack a raincoat and a packed lunch', never 'This message provides important information about the school trip and upcoming tests'.
 - All text values in <<LANGUAGE>>.
+- encouragement must always be present, in <<LANGUAGE>>, and read like something a supportive friend would say - not a school announcement and not generic corporate positivity.
 - Output ONLY the JSON object, nothing else.
 - Keep the total length of the JSON output concise, aiming for under 1500 characters. Prioritize the most critical information for parents.
 
@@ -40,3 +42,4 @@ Title: <<TITLE>>
 
 <<BODY>><<ATTACHMENTS>>
 --- MESSAGE END ---<<HINTS>>
+

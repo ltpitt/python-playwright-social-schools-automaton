@@ -46,6 +46,16 @@ def test_generate_digest_prompt_demands_topic_grouping(mock_config):
         assert "request for parents to volunteer" in prompt
 
 
+def test_generate_digest_prompt_demands_an_encouragement_in_the_reader_language(mock_config):
+    """The model, not a hardcoded list, must write the encouraging line — every time, per language"""
+    with patch('subprocess.run', return_value=_valid_cli_result()) as mock_run:
+        generate_digest("Title", "Body", [])
+
+        prompt = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-p") + 1]
+        assert '"encouragement"' in prompt
+        assert "encouraging the parent" in prompt
+
+
 def test_generate_digest_prompt_demands_a_substantive_tldr(mock_config):
     """A tldr describing the message ('this message provides...') helps no parent"""
     with patch('subprocess.run', return_value=_valid_cli_result()) as mock_run:

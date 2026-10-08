@@ -113,3 +113,34 @@ def test_dict_to_digest_rejects_blank_note():
     }
     with pytest.raises(ValueError, match="non-empty strings"):
         dict_to_digest(data)
+
+
+def test_dict_to_digest_carries_the_encouragement_through():
+    """The LLM's own encouraging line, written in the reader's language, survives parsing"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "Summary",
+        "encouragement": "  Je doet het geweldig!  ",
+        "topics": [],
+    }
+    digest = dict_to_digest(data)
+    assert digest.encouragement == "Je doet het geweldig!"
+
+
+def test_dict_to_digest_defaults_encouragement_when_absent():
+    """A response missing 'encouragement' still parses — it's a nicety, not core content"""
+    data = {"translated_title": "Test", "tldr": "Summary", "topics": []}
+    digest = dict_to_digest(data)
+    assert digest.encouragement == ""
+
+
+def test_dict_to_digest_rejects_non_string_encouragement():
+    """Test that a malformed 'encouragement' value is rejected"""
+    data = {
+        "translated_title": "Test",
+        "tldr": "Summary",
+        "encouragement": ["not", "a", "string"],
+        "topics": [],
+    }
+    with pytest.raises(ValueError, match="encouragement"):
+        dict_to_digest(data)

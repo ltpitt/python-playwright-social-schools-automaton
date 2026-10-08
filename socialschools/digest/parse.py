@@ -66,6 +66,9 @@ def dict_to_digest(data: dict) -> Digest:
         raise ValueError("'translated_title' must be a non-empty string")
     if not isinstance(data.get("tldr"), str):
         raise ValueError("'tldr' must be a string")
+    encouragement = data.get("encouragement", "")
+    if not isinstance(encouragement, str):
+        raise ValueError("'encouragement' must be a string")
     if not isinstance(data.get("topics"), list):
         raise ValueError("'topics' must be a list")
 
@@ -92,4 +95,5 @@ def dict_to_digest(data: dict) -> Digest:
         translated_title=data["translated_title"],
         tldr=data["tldr"],
         topics=topics,
+        encouragement=encouragement.strip(),
     )

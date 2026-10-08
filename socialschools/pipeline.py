@@ -21,6 +21,7 @@ from .digest.prompt import DIGEST_PROMPT_TEMPLATE
 from .digest.render import ABRIDGE_SOURCE_CHARS, render_digest_notification
 from .events import Event, environment, sha8
 from .llm.provider import get_provider
+from .quotes import draw_quote, quote_line
 from .scraping.attachments import collect_attachments
 from .scraping.browser import launch_options
 from .scraping.feed import (
@@ -238,6 +239,9 @@ def _deliver_digest(context, article, title, body, post_date, event):
 
     failed_names = [a.filename for a in attachments if a.failed] or None
     source_chars = len(body) + sum(len(a.text) for a in attachments if not a.failed)
+    quote = draw_quote()
+    if quote:
+        event["quote_id"] = quote.id
     content = {
         language: (
             digest.translated_title,
@@ -247,6 +251,7 @@ def _deliver_digest(context, article, title, body, post_date, event):
                 original_title=title,
                 post_date=post_date,
                 abridged=source_chars >= ABRIDGE_SOURCE_CHARS,
+                quote=quote_line(quote, language) if quote else None,
             ),
         )
         for language, digest in digests.items()

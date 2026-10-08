@@ -3,7 +3,7 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 
-from socialschools.models import Attachment, Digest, Topic
+from socialschools.models import Attachment, Digest, Quote, Topic
 from socialschools.pipeline import process_all_articles, process_article_content, run
 
 
@@ -75,6 +75,33 @@ def test_process_article_content_missing_attachments(mock_playwright, mock_confi
             "en": (
                 "Translated Title",
                 "Short summary\n\nNo action needed\n\n"
+                "To find this post in Social Schools, look for: \"Test Content\"",
+            ),
+        })
+
+
+def test_process_article_content_adds_one_rotating_quote_before_the_footer(mock_playwright, mock_config):
+    """The quote is drawn once per article and sits directly above the post locator"""
+    playwright, browser, context, page = mock_playwright
+
+    article = Mock()
+    article.query_selector.return_value.inner_text.return_value = "Test Content"
+    article.query_selector_all.return_value = []
+    quote = Quote(id="9", text="Make memories today.", language="en", tone="reflective", emoji="")
+
+    with patch('socialschools.pipeline.send_multilingual_notification') as mock_notify, \
+         patch('socialschools.pipeline.draw_quote', return_value=quote) as mock_draw, \
+         patch('socialschools.pipeline.generate_digest') as mock_digest:
+        mock_digest.return_value = Digest(translated_title="Title", tldr="Short summary", topics=[])
+
+        process_article_content(context, article)
+
+        mock_draw.assert_called_once_with()
+        mock_notify.assert_called_once_with({
+            "en": (
+                "Title",
+                "Short summary\n\nNo action needed\n\n"
+                "Make memories today.\n\n"
                 "To find this post in Social Schools, look for: \"Test Content\"",
             ),
         })

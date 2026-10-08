@@ -51,6 +51,14 @@ def mock_config(test_config):
     config_module.reset_config()
 
 
+@pytest.fixture(autouse=True)
+def no_quotes(tmp_path):
+    """The shipped quotes would land in every notification a test asserts on."""
+    from socialschools import paths
+    with patch.object(paths, "QUOTES_FILE", str(tmp_path / "no_quotes.csv")):
+        yield
+
+
 @pytest.fixture
 def mock_playwright():
     """A Playwright stack of Mocks: (playwright, browser, context, page)."""

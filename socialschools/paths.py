@@ -28,6 +28,10 @@ CORPUS_DIR = os.path.join(VAR, "corpus")
 EVAL_DIR = os.path.join(VAR, "eval")
 GOAL_DIR = os.path.join(VAR, "goal")
 
+# The user's own list, kept local: the text is not ours to redistribute.
+QUOTES_FILE = os.path.join(VAR, "quotes.csv")
+QUOTE_DECK_FILE = os.path.join(STATE_DIR, "quote_deck.json")
+
 # Which articles have already been delivered. Production, corpus and product
 # runs each keep their own, so replaying a corpus never makes the live run
 # forget to notify.

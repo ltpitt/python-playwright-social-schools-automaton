@@ -31,7 +31,16 @@ class Digest:
     translated_title: str
     tldr: str
     topics: list = field(default_factory=list)
-    encouragement: str = ""
+
+
+@dataclass
+class Quote:
+    """One line of encouragement for parents, chosen by code and never written by a model."""
+    id: str
+    text: str
+    language: str
+    tone: str
+    emoji: str = ""
 
 
 @dataclass

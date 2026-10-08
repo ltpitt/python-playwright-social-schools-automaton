@@ -30,6 +30,10 @@ _Avoid_: Summary, report, notification body
 The parent-facing output produced for one Article in Translation mode. The Article title and body are translated directly via Google Translate and delivered as a notification. Simple, free, and intentional — not a degraded Digest.
 _Avoid_: Fallback, raw text, emergency output
 
+**Quote**:
+One line of encouragement shown just above the post locator in a Digest. Chosen by code from the user's own local `var/quotes.csv` and rotated so none repeats before all have been used; never written by the model. Light-toned quotes may carry an emoji.
+_Avoid_: Encouragement, footer text
+
 **Action Item**:
 A concrete thing the reading parent must do because of an Article — with its deadline/date where one exists (e.g. "sign the trip form by Fri", "pay €12.50", "bring gym kit Tue").
 _Avoid_: Task, todo, reminder

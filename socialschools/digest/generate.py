@@ -62,7 +62,7 @@ def _retry_prompt(language, raw, prompt):
         "The previous response was not valid JSON, was missing required fields, or had no "
         "actual content. Respond with ONLY this JSON structure (no markdown, no explanation), "
         f"with every text value written in {language}:\n"
-        '{\n  "translated_title": "...",\n  "tldr": "...",\n  "encouragement": "...",\n'
+        '{\n  "translated_title": "...",\n  "tldr": "...",\n'
         '  "topics": [{"heading": "...", "actions": [...], "bring": [...], "notes": [...]}]\n}\n\n'
         f"Previous invalid response:\n{raw}\n\n"
         f"Original prompt:\n{prompt}"

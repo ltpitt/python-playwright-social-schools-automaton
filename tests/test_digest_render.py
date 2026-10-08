@@ -157,9 +157,9 @@ def test_render_digest_notification_with_original_title_and_date():
         translated_title="Trip Form",
         tldr="",
         topics=[Topic(heading="", actions=["15 Aug - sign form"], bring=[], notes=[])],
-        encouragement="You're doing great, keep it up!",
     )
-    result = render_digest_notification(data, original_title="Formulier reis", post_date="1 Jul 10:00")
+    result = render_digest_notification(data, original_title="Formulier reis", post_date="1 Jul 10:00",
+                                        quote="You're doing great, keep it up!")
     assert result == (
         "\U0001F4C5 1 Jul 10:00\n\n"
         "\u25b8 15 Aug - sign form\n\n"
@@ -174,9 +174,9 @@ def test_render_digest_notification_with_original_title_no_date():
         translated_title="Trip Form",
         tldr="",
         topics=[],
-        encouragement="You're doing great, keep it up!",
     )
-    result = render_digest_notification(data, original_title="Formulier reis")
+    result = render_digest_notification(data, original_title="Formulier reis",
+                                        quote="You're doing great, keep it up!")
     assert result == (
         "No action needed\n\n"
         "You're doing great, keep it up!\n\n"
@@ -206,22 +206,18 @@ def test_render_digest_notification_without_original_title_omits_footer():
     assert "To find this post" not in result
 
 
-def test_encouragement_sits_directly_before_the_original_title_footer():
-    """The LLM-written encouragement is the last thing before the footer, in the reader's own language"""
-    data = Digest(
-        translated_title="Trip Form",
-        tldr="",
-        topics=[],
-        encouragement="Je doet het geweldig \u2014 ouder zijn is niet makkelijk.",
-    )
-    result = render_digest_notification(data, original_title="Formulier reis")
+def test_quote_sits_directly_before_the_original_title_footer():
+    """The quote is the last thing before the footer"""
+    data = Digest(translated_title="Trip Form", tldr="", topics=[])
+    result = render_digest_notification(data, original_title="Formulier reis",
+                                        quote="Een goed gesprek begint klein. \U0001F605")
     lines = result.split("\n\n")
-    assert lines[-2] == "Je doet het geweldig \u2014 ouder zijn is niet makkelijk."
+    assert lines[-2] == "Een goed gesprek begint klein. \U0001F605"
     assert lines[-1] == "To find this post in Social Schools, look for: \"Formulier reis\""
 
 
-def test_no_encouragement_line_when_digest_carries_none():
-    """A degraded/fallback Digest has no encouragement — the footer must not gain a blank line"""
+def test_no_quote_line_when_none_is_given():
+    """No quote catalogue means the footer must not gain a blank line"""
     data = Digest(translated_title="Trip Form", tldr="", topics=[])
     result = render_digest_notification(data, original_title="Formulier reis")
     assert result == (
@@ -230,13 +226,6 @@ def test_no_encouragement_line_when_digest_carries_none():
     )
 
 
-def test_encouragement_without_original_title_is_not_shown():
-    """The encouragement is footer dressing — no footer means no encouragement either"""
-    data = Digest(
-        translated_title="Trip Form",
-        tldr="",
-        topics=[],
-        encouragement="Je doet het geweldig!",
-    )
-    result = render_digest_notification(data)
-    assert "Je doet het geweldig" not in result
+def test_a_digest_carries_no_quote_of_its_own():
+    """The quote is chosen by code, never written by the model"""
+    assert not hasattr(Digest(translated_title="t", tldr=""), "encouragement")
